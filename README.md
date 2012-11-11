@@ -3,7 +3,7 @@
 ### Simple and scalable versioned data storage
 
 Joshua Levy  
-2012-11-06 (covers Zinc version 0.3.15)
+2012-11-06 (covers Zinc version 0.3.16)
 
 
 ## Motivation
@@ -21,7 +21,7 @@ The key goals are:
 - **Cloud storage**: Direct support for [S3](http://aws.amazon.com/s3/) (and
   potentially any other file storage layer).
 
-- **Efficiency**: The ability to manage numerous (millions) and large
+- **Efficiency and scalability**: The ability to manage numerous (millions) and large
   (multi-gigabyte) files. Support sharding of data to avoid excessive copying.
 
 - **Simplicity**: A simple implementation and an easy-to-understand internal
@@ -159,15 +159,15 @@ filesystem. Others require a working directory.
 
 Below is a quick summary of sample commands and what they do. For illustration,
 we'll assume you have a repository in S3 at `s3://my-bucket/zinc/my-repo`
-and that this holds lots of data of data sharded by customer, each within paths like
-`customer/acme`.
+and that this holds lots of data of data. In these examples we'll assume data is
+sharded by customer, each within paths like `customer/acme`.
 
 These are setup commands you'd only run occasionally:
 
     # Create a new repository -- do this only once ever:
     zinc init s3://my-bucket/zinc/my-repo
 
-    # Create a new scope (log message username is supplied) -- do this for each new customer:
+    # Create a new scope (log message username is supplied) -- do this for each new scope (customer in this case):
     zinc newscope -R s3://my-bucket/zinc/my-repo -u levy customer/acme
 
 Now some routine commands:
