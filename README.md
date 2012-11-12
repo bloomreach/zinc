@@ -102,12 +102,12 @@ However, before we get too excited here, there are a number of key limitations:
   (The reasoning for this is that with large data files, and especially binary
   ones, you rarely want automated merge support at this layer.)
 
-- Zinc does not support advanced compression. Files are compressed individually,
+- Zinc does not support delta compression. Files are compressed individually,
   not delta compressed, for simplicity and to allow direct access to underlying
   files from other programs.
 
-- It is a new and simple piece of software, and lacks a lot of other small and
-  convenient features. See the notes below.
+- There are a number of other caveats, notably to do with the need for a locking
+  service (see below).
 
 
 ## Basics
@@ -237,8 +237,8 @@ limitations, including:
   committing.
 
 - Merging of changes to the same file is not supported. If someone commits to
-  the same scope as you, between your last update and your current commit, to the
-  same file, you have to save your work somewhere, revert, merge manually
+  the same scope as you and to the same file, between your last update and your
+  current commit, you have to save your work somewhere, revert, merge manually
   yourself, and commit again.
 
 - There is a file cache at the top of any working directory, in `.zinc/cache`.
@@ -258,6 +258,13 @@ limitations, including:
 
 - The working directory is not designed to be used by many clients at once (it
   does not use file locks). For multiple clients, use multiple working directories.
+
+- It is worth being aware that S3's consistency model occasionally causes issues
+  in rare situations where an one object may not appear for minutes or hours from
+  some locations. This is most common in
+  [S3's Standard Region](http://aws.amazon.com/s3/faqs/#What_data_consistency_model_does_Amazon_S3_employ).
+  These may cause an exception and abort during an update, but should never result in
+  corrupt data being checked out.
 
 For more details, see the long list of TODOs the end of zinc.py.
 
