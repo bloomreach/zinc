@@ -64,7 +64,7 @@ this fairly simply via direct support for S3. Some other nice features:
 
 - You can access the underlying content directly. For example, you may look up
   the location of a particular file, then point another piece of software,
-  such as Hadoop, to the underlying compressed blobs in S3. (LZOP compression
+  such as Hadoop, to the underlying compressed blobs in S3. (LZO compression
   is used for compatibility with Hadoop.)
 
 - Data is broken into "scopes" to better scale to big data problems. With any
@@ -83,7 +83,7 @@ this fairly simply via direct support for S3. Some other nice features:
   copying.
 
 - The internal format is transparent, consisting of simple text files for
-  metadata, and unmodified or LZOP compressed blobs for all files. It's also 
+  metadata, and unmodified or LZO compressed blobs for all files. It's also 
   designed in a way that it is robust to interrupted transactions; an
   interruption or other failure cannot leave the shared repository in a state
   that will ever confuse another client.
