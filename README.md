@@ -246,10 +246,12 @@ limitations, including:
   any time. Or use `--no-cache` to avoid caching altogether.
 
 - Simultaneous commits by different clients to different scopes is always
-  handled correctly. Simultaneous commits to the same scope requires some sort
-  of global locking service. By default this is not enabled. What this means is
-  that if two users commit to the same scope at once, and no locking service is
-  used, one user's commit may be lost without an error.
+  handled correctly. And commits themselves are always transactional, so either
+  succeed or fail in entirety. However, resolving conflicts between simultaneous
+  commits to the same scope requires some sort of global locking service (see
+  code). By default this is not enabled. What this means is that if two users
+  commit to the same scope at once, and no locking service is used, one user's
+  commit may be lost without an error.
 
 - There is no support for deleting tags or removing or rolling back commits
   in the repository. (But you can always just make a new commit.)
