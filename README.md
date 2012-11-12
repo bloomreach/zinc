@@ -21,8 +21,8 @@ The key goals are:
 - **Cloud storage**: Direct support for [S3](http://aws.amazon.com/s3/) (and
   potentially any other file storage layer).
 
-- **Efficiency**: The ability to manage numerous (millions) and large
-  (multi-gigabyte) files. Support sharding of data to avoid excessive copying.
+- **Efficiency and scalability**: The ability to manage numerous (millions) and
+  large (multi-gigabyte) files. Support sharding of data to avoid excessive copying.
 
 - **Simplicity**: A simple implementation and an easy-to-understand internal
   storage structure for files, so you have a good understanding of how your
@@ -96,12 +96,15 @@ this fairly simply via direct support for S3. Some other nice features:
 
 However, before we get too excited here, there are a number of key limitations:
 
-- Zinc does not support any of the more advanced features of a revision control
-  system, like branching or merging. (Note that with large data files and especially
-  binaries you rarely want to merge multiple changes to a file.)
+- Zinc is a small and basic piece of software, without a lot of the comforts of a
+  mature and complex system like Git or Mercurial. Nor does it support any of the
+  more advanced features of a revision control system, like branching or merging.
+  (The reasoning for this is that with large data files, and especially binary
+  ones, you rarely want automated merge support at this layer.)
 
 - Zinc does not support advanced compression. Files are compressed individually,
-  not delta compressed, for simplicity and to allow direct access to underlying files.
+  not delta compressed, for simplicity and to allow direct access to underlying
+  files from other programs.
 
 - It is a new and simple piece of software, and lacks a lot of other small and
   convenient features. See the notes below.
@@ -253,6 +256,8 @@ limitations, including:
 
 - The working directory is not designed to be used by many clients at once (it
   does not use file locks). For multiple clients, use multiple working directories.
+
+For more details, see the long list of TODOs the end of zinc.py.
 
 
 ## Further Information
