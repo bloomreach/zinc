@@ -195,7 +195,7 @@ Now some routine commands:
     # For this scope, or each scope we have checked out, remember what revision we have:
     zinc id
     zinc ids
-    # Update or working copy, in case someone else has made changes:
+    # Update our working copy, in case someone else has made changes:
     zinc update -s customer/acme
     # Or, update all scopes
     zinc update --all
