@@ -162,7 +162,7 @@ filesystem. Others require a working directory.
 
 Below is a quick summary of sample commands and what they do. For illustration,
 we'll assume you have a repository in S3 at `s3://my-bucket/zinc/my-repo`
-and that this holds lots of data of data. In these examples we'll assume data is
+and that this holds lots of data. In these examples we'll assume data is
 sharded by customer, each within paths like `customer/acme`.
 
 These are setup commands you'd only run occasionally:
