@@ -162,7 +162,7 @@ filesystem. Others require a working directory.
 
 Below is a quick summary of sample commands and what they do. For illustration,
 we'll assume you have a repository in S3 at `s3://my-bucket/zinc/my-repo`
-and that this holds lots of data of data. In these examples we'll assume data is
+and that this holds lots of data. In these examples we'll assume data is
 sharded by customer, each within paths like `customer/acme`.
 
 These are setup commands you'd only run occasionally:
@@ -195,7 +195,7 @@ Now some routine commands:
     # For this scope, or each scope we have checked out, remember what revision we have:
     zinc id
     zinc ids
-    # Update or working copy, in case someone else has made changes:
+    # Update our working copy, in case someone else has made changes:
     zinc update -s customer/acme
     # Or, update all scopes
     zinc update --all
