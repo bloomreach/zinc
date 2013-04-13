@@ -197,7 +197,7 @@ zinc commit --suppress -s test_scope -u user3 -m "empty commit, will be ignored"
 
 create_file test_scope/file7 "new file7, take 2"
 zinc commit -s test_scope -u user3 -m "another commit"
-test_scope_rev=$(zinc id -s test_scope)
+test_scope_rev=`zinc id -s test_scope`
 zinc tag -s test_scope -r $test_scope_rev my-third-tag
 
 zinc status -s test_scope
@@ -209,6 +209,8 @@ zinc scopes
 
 ### Second working dir
 cd $work
+# show the log starting from tip even without checking out
+zinc log -R $root_uri -s test_scope
 zinc checkout -s test_scope -r my-first-tag $root_uri work_dir_alt
 cd work_dir_alt
 zinc ids
@@ -232,7 +234,11 @@ zinc update --all
 cd $work
 cd work_dir
 create_file test_scope/new_file_from_another_work_dir "contents"
+# show the log starting from the checkedout rev
+zinc log -s test_scope
 zinc update -s test_scope
+# show the log starting from tip
+zinc log -s test_scope
 zinc commit -s test_scope -u user5 -m "committing from original working dir"
 create_file test_scope/non_conflicting_file "modifying this file should be fine since it is new"
 zinc update -s test_scope -r my-first-tag
@@ -276,6 +282,46 @@ mkdir -p test_scope/.tmp-copy.e8q4rtgsjvkoy/some-path
 create_file test_scope/.tmp-copy.e8q4rtgsjvkoy/some-path/junk5 "this whole directory should be ignored"
 zinc status --work 
 
+### Test track, untrack, and checkout --mode partial, and status --full
+cd $work
+zinc checkout -s test_scope --mode partial $root_uri work_dir_track
+cd work_dir_track
+zinc tag -s test_scope my-fourth-tag
+zinc track -s test_scope subdir1/file3
+zinc status -s test_scope --full
+create_file test_scope/subdir1/file3 "modify contents"
+zinc status -s test_scope --full
+zinc commit -s test_scope -u user8 -m "partial commiting"
+zinc status -s test_scope --full
+zinc untrack -s test_scope subdir1/file3
+zinc track -s test_scope subdir1/file3
+zinc status -s test_scope --full #=> should not say that subdir1/file3 is modifiled since it is not modified
+zinc track -s test_scope subdir1/file11 || expect_error #=> file11 does not exist yet
+create_file test_scope/subdir1/file11 "new file"
+zinc track -s test_scope subdir1/file11
+create_file test_scope/untracked "this files is not tracked"
+zinc status -s test_scope --full #=> test_scope/untracked is not tracked yet
+zinc track -s test_scope --mode auto #=> switch to auto mode
+zinc status -s test_scope --full #=> test_scope/untracked will show up as well as other changes
+zinc track -s test_scope --mode partial #=> switch back to partial mode
+zinc commit -s test_scope -u user8 -m "partial commiting2"
+zinc status -s test_scope
+rm test_scope/untracked
+zinc untrack -s test_scope subdir1/file11
+rm test_scope/subdir1/file11
+zinc track -s test_scope subdir1/file11 --no-download #=> does not perform download
+zinc status -s test_scope #=> shows that subdir1/file11 is deleted
+zinc commit -s test_scope -u user8 -m "partial commiting3" #=> delete subdir1/file11 without downloading it
+zinc update -s test_scope -r my-fourth-tag #=> go back to previous rev
+zinc untrack -s test_scope subdir1/file3
+zinc update -s test_scope
+zinc track -s test_scope subdir1/file3
+zinc status -s test_scope #=> shows that subdir1/file3 is modifiled
+zinc update -s test_scope -r my-fourth-tag || expect_error #=> should fail since both local and remote subdir1/file3 are changed
+cat test_scope/subdir1/file3 #=> should be "more contents"
+zinc revert -s test_scope #=> this should download the newest version of subdir1/file3
+cat test_scope/subdir1/file3 #=> should be "modify contents"
+zinc status -s test_scope
 
 
 ### Another working dir, but no caching
@@ -325,6 +371,7 @@ chmod +wx $work/forbidden
 
 # Set up a big file so we can interrupt operations.
 cd $work/work_dir_all
+zinc update -s test_scope
 create_file_of_size 100 test_scope/subdir1/bigfile-uncompressed
 zinc commit -s test_scope -u user1 -m "another commit (big file, no compression)" --compression=raw
 

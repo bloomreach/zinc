@@ -21,12 +21,14 @@ Zinc: Simple and scalable versioned data storage
 
 Requirements: Python 2.5, Boto 1.3 (or 2.0+ for large file multipart upload support), lzop (for LZO compression)
 
-Authors: Joshua Levy, Srinath Sridhar
+Authors: Joshua Levy, Srinath Sridhar, Kazuyuki Tanimura
 '''
 
 #
 # Revision history:
 #
+# 0.3.18  Add track/untrack commands, checkout --mode option, and status --full option
+# 0.3.17  Zinc log command now shows the log from the checked out revision instead of tip.
 # 0.3.16  Open source with Apache License.
 # 0.3.15  Error for nested working directories. Fix error with copy to local file in local dir.
 # 0.3.14  Very minor fixes.
@@ -51,7 +53,7 @@ import boto
 from boto.s3.connection import S3Connection # XXX seems to be needed to initialize boto module correctly
 
 # Version of this code.
-ZINC_VERSION = "0.3.16"
+ZINC_VERSION = "0.3.18"
 # Version of this repository implementation.
 REPO_VERSION = "0.3"
 REPO_VERSIONS_SUPPORTED = ["0.2", "0.3"]
@@ -93,6 +95,9 @@ S3_SECRET_KEY_NAME = "S3_SECRET_KEY"
 
 # Metadata header name we use for our own MD5 content hash. We use our own header since S3's etag is not really a reliable MD5 hash.
 ZINC_S3_MD5_NAME = "zinc-md5"
+INVALID_MD5 = "---"
+INVALID_SIZE = -1
+INVALID_MTIME = -1.0
 
 # Default scheme for file storage.
 SCHEME_DEFAULT = "lzo"
@@ -195,6 +200,10 @@ class _Enum(object):
     cls.key_for(value)
     return value
 
+  @classmethod
+  def values(cls):
+    return cls.value_dict.keys()
+
 def enum(name, **enum_dict):
   '''
   Create an enum class. Accepts name for the class and key-value pairs for each
@@ -261,6 +270,18 @@ def parse_rev_range(rev_str):
   else:
     raise InvalidArgument("invalid revision range: '%s'" % rev_str)
 
+def determine_rev_range(options, config):
+  '''
+  Takes option parameters and return a (start, end) rev range tuple.
+  If a user specifies the rev options, it simply returns the user's rev range.
+  In case a user does not specify rev, it tries to return the checkedout rev.
+  If the scope is not checkedout, it returns ("tip", None).
+  '''
+  rev = "tip"
+  if options.work_dir:
+    rev = WorkingDir(options.work_dir, config).get_checkout_rev(options.scope) or rev
+  return parse_rev_range(options.rev) if options.rev else (rev, None)
+
 def join_path(*elements):
   '''Join path elements: a, b, c -> a/b/c. Also handles case where initial path is empty.'''
   if elements and elements[0] == "":
@@ -287,6 +308,11 @@ def group_pairs(pairs):
     else:
       out[x] = [y]
   return out
+
+def setattrs(self, others):
+  ''' useful for saving others (function properties) as instance variables '''
+  for (k, v) in others.iteritems():
+    setattr(self, k, v)
 
 
 ##
@@ -835,6 +861,11 @@ class Config(object):
       return None
 
 
+# Checkout mode for scopes.
+# ToBeTracked is a state that a file locally exists and is tracked but not registered in manifest yet
+FileState = enum("FileState", Tracked="tracked", Untracked="untracked", ToBeTracked="to_be_tracked")
+FileStateTrackedList = [FileState.Tracked, FileState.ToBeTracked] # for convenience
+
 class Fingerprint(object):
   '''
   The fingerprint of an item. Contains modification time (mtime), size, and/or
@@ -849,23 +880,26 @@ class Fingerprint(object):
   SAME = "match"
   UNCERTAIN = "uncertain"
 
-  def __init__(self, type=ItemType.FILE, mtime=None, size=None, md5=None):
+  def __init__(self, type=ItemType.FILE, mtime=None, size=None, md5=None, state=FileState.Tracked, **others):
     self.type = type
     self.mtime = mtime
     self.size = size
     self.md5 = md5
+    self.state = state
+    # for future compatibility
+    setattrs(self, others) # this is tested locally by adding random attributes and they passed through
 
   def __repr__(self):
     return self.to_str()
 
   @staticmethod
-  def of_file(local_path, md5=None, compute_md5=False):
+  def of_file(local_path, md5=None, compute_md5=False, state=FileState.Tracked):
     '''Get a Fingerprint for the item at the local path given. Uses supplied MD5 or computes MD5 if requested.'''
     fp = Fingerprint()
-    fp.read_from_file(local_path, md5=md5, compute_md5=compute_md5)
+    fp.read_from_file(local_path, md5=md5, compute_md5=compute_md5, state=state)
     return fp
     
-  def read_from_file(self, path, md5=None, compute_md5=False):
+  def read_from_file(self, path, md5=None, compute_md5=False, state=FileState.Tracked):
     if not os.path.isfile(path):
       raise InvalidOperation("file not found: '%s'" % path)
     if not os.path.isfile(path):
@@ -879,6 +913,7 @@ class Fingerprint(object):
       self.md5 = file_md5(path)
     else:
       self.md5 = None
+    self.state = state
 
   def compare(self, fp):
     '''Compare two FingerprintList. Returns DIFFER, SAME, or UNCERTAIN (if we are missing a needed MD5).'''
@@ -899,7 +934,7 @@ class Fingerprint(object):
       raise NotImplementedError("currently support only plain files")
 
   def to_str(self):
-    return shortvals_to_str([(k, getattr(self, k)) for k in ["type", "mtime", "size", "md5"]])
+    return shortvals_to_str(vars(self)) # TODO change this when we need to use some private instance variables
 
   def from_str(self, vals_str):
     vals = shortvals_from_str(vals_str)
@@ -910,6 +945,13 @@ class Fingerprint(object):
         v = int(v)
       setattr(self, k, v)
 
+  def invalidate(self):
+    if self.md5:
+      self.md5 = INVALID_MD5
+    if self.size:
+      self.size = INVALID_SIZE
+    if self.mtime:
+      self.mtime = INVALID_MTIME
 
 class FileCache(object):
   '''
@@ -1430,6 +1472,19 @@ class Changelist(object):
     int_changeset.rm_paths.intersection_update(other_changelist.all_paths())
     int_changeset.mod_paths.intersection_update(other_changelist.all_paths())
     return int_changeset
+
+  def difference(self, other_changelist):
+    '''Return a new changelist with elements in the changelist that are not in the other changelist.'''
+    int_changeset = Changelist(add_paths=self.add_paths, rm_paths=self.rm_paths, mod_paths=self.mod_paths)
+    int_changeset.add_paths.difference_update(other_changelist.all_paths())
+    int_changeset.rm_paths.difference_update(other_changelist.all_paths())
+    int_changeset.mod_paths.difference_update(other_changelist.all_paths())
+    return int_changeset
+
+  def discard(self, path):
+    self.add_paths.discard(path)
+    self.rm_paths.discard(path)
+    self.mod_paths.discard(path)
     
   def is_empty(self):
     return len(self.add_paths) == 0 and len(self.rm_paths) == 0 and len(self.mod_paths) == 0
@@ -2128,14 +2183,20 @@ class Repo(object):
 ## Working directory
 ##
 
+# Checkout mode for scopes.
+Mode = enum("Mode", AUTO="auto", PARTIAL="partial")
+
 class Checkout(object):
   '''A checkout of a scope.'''
-  def __init__(self, scope, rev):
+  def __init__(self, scope, rev, mode, **others):
     self.scope = scope
     self.rev = rev
+    self.mode = mode
+    # for future compatibility
+    setattrs(self, others) # this is tested locally by adding random attributes and they passed through
 
   def __repr__(self):
-    return "%s at %s" % (self.scope, self.rev)
+    return "%s at %s with mode %s" % (self.scope, self.rev, self.mode)
 
 
 class CheckoutList(object):
@@ -2156,8 +2217,14 @@ class CheckoutList(object):
   def add(self, checkout):
     self.checkouts[checkout.scope] = checkout
 
-  def update(self, scope, rev):
-    self.checkouts[scope] = Checkout(scope, rev)
+  def has_scope(self, scope):
+    return scope in self.checkouts
+
+  def update_rev(self, scope, rev):
+    if self.has_scope(scope):
+      self.checkouts[scope].rev = rev
+    else:
+      self.checkouts[scope] = Checkout(scope, rev, Mode.AUTO)
 
   def rev(self, scope):
     return self.checkouts[scope].rev if scope in self.checkouts else None
@@ -2168,16 +2235,22 @@ class CheckoutList(object):
   def to_str(self):
     out = []
     for scope in sorted(self.checkouts.keys()):
-      out.append("%s\t%s\n" % (scope, self.checkouts[scope].rev))
-    return "".join(out)
+      out.append(shortvals_to_str(vars(self.checkouts[scope]))) # TODO change this when we need to use some private instance variables
+    return "\n".join(out)
 
   def from_str(self, checkouts_str):
     self.clear()
     for line in checkouts_str.splitlines():
       line = line.strip()
       if line and not line.startswith("#"):
-        (scope, rev) = line.split("\t")
-        self.checkouts[scope] = Checkout(scope, rev)
+        if "\t" in line:
+          # for older format
+          # XXX Remove this at some point.
+          (scope, rev) = line.split("\t")
+          self.checkouts[scope] = Checkout(scope, rev, Mode.AUTO)
+        else:
+          init_property = shortvals_from_str(line)
+          self.checkouts[init_property["scope"]] = Checkout(**init_property)
 
 
 class FingerprintList(object):
@@ -2203,15 +2276,6 @@ class FingerprintList(object):
 
   def update_fingerprint(self, local_path, fingerprint):
     self.fingerprints[local_path] = fingerprint
-
-  def for_subdir(self, prefix):
-    '''Return all items within the given directory scope (or other directory prefix). Returned paths are trimmed of the scope.'''
-    fingerprints = FingerprintList()
-    prefix = prefix.strip("/") + "/"
-    for (local_path, fp) in self.fingerprints.iteritems():
-      if local_path.startswith(prefix):
-        fingerprints.update_fingerprint(local_path[len(prefix):], fp)
-    return fingerprints
 
   def fill_md5s(self, other_fingerprints):
     '''Fill in MD5s from all matching fingerprints in another FingerprintList.'''
@@ -2245,12 +2309,12 @@ class FingerprintList(object):
     return count
 
   @staticmethod
-  def of_files(root_path, path_list, compute_md5=False):
+  def of_files(root_path, path_list, compute_md5=False, state=FileState.Tracked):
     '''Return a FingerprintList for a list of files relative to root_path. Files must exist.'''
     fingerprints = FingerprintList()
     for path in path_list:
       full_path = join_path(root_path, path)
-      fp = Fingerprint.of_file(full_path, compute_md5=compute_md5)
+      fp = Fingerprint.of_file(full_path, compute_md5=compute_md5, state=state)
       fingerprints.update_fingerprint(path, fp)
     return fingerprints
 
@@ -2302,10 +2366,35 @@ class CheckoutState(object):
         raise InvalidOperation("missing file: '%s'" % full_path)
 
   def has_scope(self, scope):
-    return scope in self.checkouts.checkouts
+    return self.checkouts.has_scope(scope)
+
+  def scope_mode(self, scope, mode=None):
+    if mode is None:
+      # get scope mode
+      return self.checkouts.checkouts[scope].mode if self.has_scope(scope) else None
+    else:
+      # update scope mode
+      if self.has_scope(scope):
+        self.checkouts.checkouts[scope].mode = mode
+      else:
+        raise InvalidOperation("scope '%s' has not been checkedout" % scope)
+
+  def for_subdir(self, scope):
+    '''Return all items within the given directory scope (or other directory prefix). Returned paths are trimmed of the scope.'''
+    fingerprints = FingerprintList()
+    prefix = scope.strip("/") + "/"
+    for (local_path, fp) in self.fingerprints.fingerprints.iteritems():
+      if local_path.startswith(prefix):
+        if fp.state == FileState.Tracked:
+          fingerprints.update_fingerprint(local_path[len(prefix):], fp)
+        elif fp.state == FileState.ToBeTracked and self.scope_mode(scope) == Mode.PARTIAL:
+          full_path = join_path(self.work_dir, local_path)
+          if not os.path.exists(full_path):
+            log.warn("Warning: '%s' is newly tracked but missing in the working directory; please untrack it." % full_path)
+    return fingerprints
 
   def update_checkout_rev(self, scope, rev):
-    self.checkouts.update(scope, rev)
+    self.checkouts.update_rev(scope, rev)
 
   def update_item(self, scope, path, fingerprint):
     local_path = join_path(scope, path)
@@ -2467,15 +2556,19 @@ class WorkingDir(object):
         relative_paths.append(path)
     return relative_paths
 
-  def _walk_files(self, scope):
-    '''Return all local files in scope recursively, returning relative paths.'''
+  def _walk_files(self, scope, force_mode=Mode.PARTIAL, print_untracked=False):
+    '''
+    Return all local files in scope recursively, returning relative paths.
+    force_mode=Mode.PARTIAL avoids to return untracked files iff the scope is in partial mode.
+    '''
     all_files = []
     scope_dir = join_path(self.work_dir, scope)
     log.debug("walking tree: %s", scope_dir)
+    not_partial = not (force_mode == Mode.PARTIAL and self.get_scope_mode(scope) == Mode.PARTIAL)
     for root, dirnames, filenames in os.walk(scope_dir):
       for filename in filenames:
         full_path = join_path(root, filename)
-        if not self.ignore_path(full_path):
+        if not self.ignore_path(full_path) and (not_partial or self._is_tracking(scope, strip_prefix(self.work_dir + "/" + scope + "/", full_path), print_untracked=print_untracked)):
           all_files.append(full_path)
     return self._get_relative_paths(all_files, scope)
 
@@ -2489,6 +2582,15 @@ class WorkingDir(object):
       move_to_backup(path, backup_suffix=backup_suffix)
     else:
       os.remove(path)
+
+  @contextmanager
+  def _yield_fingerprint(self, scope, path):
+    '''Expose fingerprint of an item specified with scope and path.'''
+    local_path = join_path(scope, path)
+    fp = self.checkout_state.fingerprints.lookup_fingerprint(local_path)
+    yield (fp, local_path)
+    if fp is not None:
+      self.checkout_state.fingerprints.update_fingerprint(local_path, fp)
 
   def _read_checkout_state(self):
     # XXX Remove this at some point.
@@ -2511,6 +2613,17 @@ class WorkingDir(object):
     # log.info("checkout state is\n%s", self.checkout_state.to_str())
     write_string_to_file(filename, self.checkout_state.to_str())
 
+  def _is_tracking(self, scope, path, print_untracked=False):
+    '''Check whether or not the full_path is tracked'''
+    assert self.checkout_state
+    tracking = False
+    with self._yield_fingerprint(scope, path) as (fp, local_path):
+      if fp is not None:
+        tracking = fp.state in FileStateTrackedList
+      if not tracking and print_untracked:
+        log.info("Untracked local file: %s" % local_path)
+    return tracking
+
   def checkouts(self, expect_nonempty=True):
     '''The current list of checkouts.'''
     checkouts = self.checkout_state.checkouts.as_list()
@@ -2520,9 +2633,15 @@ class WorkingDir(object):
 
   def get_checkout_rev(self, scope):
     return self.checkout_state.checkouts.rev(scope)
+
+  def get_scope_mode(self, scope):
+    return self.checkout_state.scope_mode(scope)
+
+  def update_scope_mode(self, scope, mode):
+    self.checkout_state.scope_mode(scope, mode)
   
   @log_calls
-  def checkout(self, scope, srev="tip", force=False):
+  def checkout(self, scope, srev="tip", force=False, mode=Mode.AUTO):
     '''
     Check out data at scope into working directory. If there are any local
     changes, then do not perform a checkout unless forced. Working directory
@@ -2536,11 +2655,13 @@ class WorkingDir(object):
     local_scope_path = join_path(self.work_dir, scope)
     make_all_dirs(local_scope_path)
 
-    mf = self.update(scope, srev=srev, force=force, is_checkout=True)
+    if mode is None:
+      mode = Mode.AUTO
+    mf = self.update(scope, srev=srev, force=force, is_checkout=True, mode=mode)
 
     return mf
 
-  def _fingerprint_status(self, scope, compute_md5=False):
+  def _fingerprint_status(self, scope, compute_md5=False, force_mode=Mode.PARTIAL, print_untracked=False):
     '''
     Return FingerprintLists for original contents and current files.  Original
     contents will always have hashes. All hashes will be recomputed for current
@@ -2548,20 +2669,21 @@ class WorkingDir(object):
     '''
     if not self.checkout_state.has_scope(scope):
       raise InvalidArgument("scope is not checked out: '%s'" % scope)
-    old_fingerprints = self.checkout_state.fingerprints.for_subdir(scope)
+    old_fingerprints = self.checkout_state.for_subdir(scope)
     
-    # TODO This should be based on which files are tracked. Currently we don't have add/remove commands.
-    file_list = self._walk_files(scope)
+    file_list = self._walk_files(scope, force_mode=force_mode, print_untracked=print_untracked)
     local_scope_path = join_path(self.work_dir, scope)
     new_fingerprints = FingerprintList.of_files(local_scope_path, file_list, compute_md5=compute_md5)
 
     return (old_fingerprints, new_fingerprints)
 
   @log_calls
-  def status(self, scope, mod_all=False):
+  def status(self, scope, mod_all=False, force_mode=Mode.PARTIAL, full=False):
     '''Return a Changelist for the given scope, or None if scope not recognized.'''
+    if full:
+      log.info("%s: scope '%s' at revision %s in tracking mode '%s'", "status", scope, self.get_checkout_rev(scope), self.get_scope_mode(scope))
     local_scope_dir = join_path(self.work_dir, scope)
-    (old_fingerprints, new_fingerprints) = self._fingerprint_status(scope, compute_md5=False)
+    (old_fingerprints, new_fingerprints) = self._fingerprint_status(scope, compute_md5=False, force_mode=force_mode, print_untracked=full)
     changelist = changelist_for_fingerprints(old_fingerprints, new_fingerprints, lazy_md5s=True, root_path=local_scope_dir, mod_all=mod_all)
     # TODO: Store newly computed fingerprints in a cache, so we needn't compute them next time
     return changelist
@@ -2591,8 +2713,13 @@ class WorkingDir(object):
     return new_fingerprints
 
   @log_calls
-  def update(self, scope, srev="tip", force=False, is_checkout=False):
-    '''Update working directory. Checkouts are also implemented here, as if they were updates from an empty manifest.'''
+  def update(self, scope, srev="tip", force=False, is_checkout=False, mode=None):
+    '''
+    Update working directory. Checkouts are also implemented here, as if they were updates from an empty manifest.
+    mode is only for checkout
+    '''
+    partial_mode = mode == Mode.PARTIAL
+    is_partial_checkout = is_checkout and partial_mode
 
     # Get manifest for working dir
     cur_rev = self.get_checkout_rev(scope)
@@ -2601,13 +2728,24 @@ class WorkingDir(object):
         raise InvalidOperation("scope '%s' is already checked out; use update instead" % scope)
       old_mf = Manifest()
     else:
+      if mode is not None:
+        raise InvalidOperation("mode option '%s' is used with update" % mode)
       old_mf = self.repo.get_manifest(scope, cur_rev) if cur_rev else Manifest()
     # Get new manifest. Doing this first also validates scope and srev.
     new_mf = self.repo.get_manifest(scope, srev)
 
     # Find out what files we need to update.
-    changelist = changelist_for_items(old_mf.items, new_mf.items)
+    changelist = changelist_for_items(old_mf.items, new_mf.items) if not is_partial_checkout else Changelist()
     log.debug("update from %s to %s, changing %s", old_mf, new_mf, changelist)
+
+    # If in partial tracking mode, keep only FileState.Tracked files
+    if partial_mode or self.get_scope_mode(scope) == Mode.PARTIAL:
+      for path in changelist.all_paths():
+        with self._yield_fingerprint(scope, path) as (fp, local_path):
+          if fp is None or fp.state not in FileStateTrackedList:
+            if fp is not None:
+              fp.invalidate() # we have to invalidate this fingerprint since the remote file might be updated.
+            changelist.discard(path)
 
     # Check for local uncommitted changes. If there is no overlap, the update is safe.
     status_changelist = self.status(scope) if not is_checkout else Changelist()
@@ -2631,9 +2769,128 @@ class WorkingDir(object):
     # Changes to files are done. Update checkout state. We already have hashes in new_fingerprints.
     self.checkout_state.update_from_changelist(scope, changelist, new_fingerprints)
     self.checkout_state.update_checkout_rev(scope, new_mf.rev)
+    if is_partial_checkout:
+      self.update_scope_mode(scope, Mode.PARTIAL)
     self._write_checkout_state()
 
     return new_mf
+
+  @log_calls
+  def track(self, scope, track_path_list=[], mode=None, no_download=False):
+    '''Update working directory. track_path_list is a list of filenames to track.'''
+    # If mode is unspecified, use the mode that the given scope currently in
+    if mode is None:
+      partial_mode = self.get_scope_mode(scope) == Mode.PARTIAL
+      if not partial_mode and track_path_list:
+        raise InvalidOperation("scope %s is not in tracking mode %s; cannot track files" % (scope, Mode.PARTIAL))
+    else:
+      partial_mode = mode == Mode.PARTIAL and (len(track_path_list) > 0 or self.get_scope_mode(scope) != Mode.PARTIAL)
+    partial2auto_mode = self.get_scope_mode(scope) == Mode.PARTIAL and mode == Mode.AUTO and len(track_path_list) == 0
+    # Error checking
+    if not (partial_mode or partial2auto_mode):
+      raise InvalidOperation("scope %s is already in %s mode; specyfing mode %s does not make much sense" % (scope, Mode.AUTO, mode))
+    # Get manifest for working dir
+    cur_rev = self.get_checkout_rev(scope)
+    mf = self.repo.get_manifest(scope, cur_rev)
+
+    # Find out what files we need to update.
+    changelist = changelist_for_items([], mf.items)
+    log.debug("update from %s, changing %s", mf, changelist)
+    track_changelist = Changelist()
+    # Filter down the changelist if checking out / track only specified files
+    if partial_mode:
+      self.update_scope_mode(scope, Mode.PARTIAL)
+      log.info("%s: scope '%s' at revision %s in tracking mode '%s'", "track", scope, mf.rev, Mode.PARTIAL)
+      for path in track_path_list:
+        with self._yield_fingerprint(scope, path) as (fp, local_path):
+          if fp is not None and fp.state in FileStateTrackedList:
+            raise InvalidOperation("scope %s path %s is already %s" % (scope, path, fp.state))
+        track_changelist.update(path, Changelist.Status.ADDED)
+      changelist = changelist.intersect(track_changelist)
+
+    # if changing mode from auto to partial, register it
+    if partial2auto_mode:
+      self.update_scope_mode(scope, Mode.AUTO)
+      log.info("%s: scope '%s' at revision %s in tracking mode '%s'", "track", scope, mf.rev, Mode.AUTO)
+
+    # We need any local file changes even we are not tracking them in order to avoid overwriting
+    # the files that have the same name in the scope; I.e., use mode=Mode.AUTO when in partial_mode
+    status_changelist = self.status(scope, force_mode=Mode.AUTO)
+    # mod_changelist is for files that manifest has but locally modified or deleted
+    mod_changelist = status_changelist.intersect(changelist)
+    # add_changelist is for files that manifest does no have but locally newlly added
+    add_changelist =  track_changelist.difference(changelist)
+    # retrack_changelist is for files that has been untracked but brought back to be tracked
+    retrack_changelist = changelist.difference(mod_changelist)
+    retrack_changelist_paths = retrack_changelist.all_paths()
+    for path in retrack_changelist_paths:
+      with self._yield_fingerprint(scope, path) as (fp, local_path):
+        if fp is not None and fp.state in FileStateTrackedList:
+          # do not include paths that are already tracked since the file should be there
+          self.checkout_state._check_file_exists(local_path) # sanity check
+          retrack_changelist.discard(path)
+    log.debug("update changelist:\n%s", changelist.to_summary())
+    log.debug("status changelist:\n%s", status_changelist.to_summary())
+    log.debug("modified changelist:\n%s", mod_changelist.to_summary())
+    log.debug("added changelist:\n%s", add_changelist.to_summary())
+    log.debug("retrack changelist:\n%s", retrack_changelist.to_summary())
+
+    # Update mod_changelist checkout state; do not update local files
+    if mod_changelist.is_empty():
+      log.info("no conflicting local changes")
+    else:
+      log.info("preserving files: %s (assuming these changes in working directory are ahead of those in repository)", mod_changelist.brief_summary())
+      for path in mod_changelist.all_paths():
+        with self._yield_fingerprint(scope, path) as (fp, local_path):
+          if fp is None:
+            assert False # since it is picked-uped by status change, there must be a fingerprint
+          fp.state = FileState.Tracked
+          fp.md5 = INVALID_MD5 # for precaution since this md5 could be outdated. No need to invalidate size. This file is marked as MODIFIED or REMOVED anyway.
+
+    # Update add_changelist checkout state; do no update local files
+    if not add_changelist.is_empty():
+      add_changelist_paths = add_changelist.all_paths()
+      for path in add_changelist_paths:
+        local_path = join_path(scope, path)
+        self.checkout_state._check_file_exists(local_path) # sanity check
+      log.info("newly tracking: %s (files that are not in repository yet)", add_changelist.brief_summary())
+      local_scope_path = join_path(self.work_dir, scope)
+      new_fingerprints = FingerprintList.of_files(local_scope_path, add_changelist_paths, compute_md5=True, state=FileState.ToBeTracked)
+      self.checkout_state.update_from_changelist(scope, add_changelist, new_fingerprints)
+
+    # Update retrack files
+    if retrack_changelist.is_empty():
+      if no_download:
+        log.warn("Warning: --no-download is used, even though there is nothing to download")
+    else:
+      log.info("updating files: %s", retrack_changelist.brief_summary())
+      if no_download:
+        for path in retrack_changelist_paths:
+          local_path = join_path(scope, path)
+          fp = Fingerprint(md5=INVALID_MD5, mtime=INVALID_MTIME, size=INVALID_SIZE, state=FileState.Tracked) # fake MD5 in order to pass sanity checks later
+          self.checkout_state.fingerprints.update_fingerprint(local_path, fp)
+      else:
+        new_fingerprints = self._update_local_files(scope, mf.items, retrack_changelist, delete_all=True)
+        # Changes to files are done. Update checkout state. We already have hashes in new_fingerprints.
+        self.checkout_state.update_from_changelist(scope, retrack_changelist, new_fingerprints)
+
+    self._write_checkout_state()
+
+    return mf
+
+  @log_calls
+  def untrack(self, scope, untrack_path_list, mode):
+    if Mode.PARTIAL not in [self.get_scope_mode(scope), mode]:
+      raise InvalidOperation("scope %s is not in %s tracking mode; cannot untrack files" % (scope, Mode.PARTIAL))
+    # make sure this scope is in partial tracking mode first
+    self.update_scope_mode(scope, Mode.PARTIAL)
+    for path in untrack_path_list:
+      with self._yield_fingerprint(scope, path) as (fp, local_path):
+        if fp is None or fp.state == FileState.Untracked:
+          raise InvalidOperation("scope %s path %s is already %s" % (scope, path, FileState.Untracked))
+        fp.state = FileState.Untracked
+    # write back trackinglist status
+    self._write_checkout_state()
 
   @log_calls
   def revert(self, scope, path_list=None, backup_suffix=BACKUP_SUFFIX):
@@ -2682,6 +2939,11 @@ class WorkingDir(object):
         return
       else:
         raise InvalidOperation("nothing to commit at scope '%s'" % scope, suppressable=True)
+
+    # if a new file is tracked and simultaneously removed, raise an error (suppressable).
+    for local_path, fp in self.checkout_state.fingerprints.fingerprints.iteritems():
+      if fp.state == FileState.ToBeTracked:
+        self.checkout_state._check_file_exists(local_path) # sanity check
 
     log.info("committing changes (%s)", changelist.brief_summary())
     log.stream.write(changelist.to_summary(prefix=scope))
@@ -2847,7 +3109,7 @@ class WorkingDir(object):
 # Commands that work directly on the repository 
 _COMMAND_LIST_REPO = ["init", "newscope", "scopes", "log", "tags", "tag", "list", "copy", "locate", "_manifest"]
 # Commands that require a working directory
-_COMMAND_LIST_WORK = ["checkout", "update", "revert", "id", "ids", "status", "commit"]
+_COMMAND_LIST_WORK = ["checkout", "update", "revert", "id", "ids", "status", "commit", "track", "untrack"]
 
 # Allowed command abbreviations
 _COMMAND_ABBREVS = { "cp": "copy", "ls": "list" }
@@ -2913,7 +3175,7 @@ def run_command(command, command_args, options):
           print "%s" % scope
       elif command == "log":
         require_opt(command, "scope", options)
-        (start, end) = parse_rev_range(options.rev) if options.rev else ("tip", None)
+        (start, end) = determine_rev_range(options, config)
         time_filter = parse_datespec(options.date, assume_utc=options.assume_utc) if options.date else None
         filter = (lambda mf: time_filter(mf.time)) if time_filter else None
         repo.log(options.scope, sys.stdout, srev_start=start, srev_end=end, filter=filter)
@@ -2984,6 +3246,12 @@ def run_command(command, command_args, options):
 
   elif command in _COMMAND_LIST_WORK:
 
+    # check the mode option
+    if options.mode is not None:
+      options.mode = options.mode.lower()
+      if options.mode not in Mode.values():
+        raise InvalidArgument("--mode has to be one of %s" % Mode.values())
+
     # Set up a new working dir, if necessary. Do this now so we can create a WorkingDir object.
     if command == "checkout":
       rev = options.rev if options.rev else "tip"
@@ -3005,10 +3273,10 @@ def run_command(command, command_args, options):
           raise InvalidOperation("no scopes found", suppressable=True)
         log.info("checking out %d scopes", len(scopes))
         for scope in scopes:
-          work.checkout(scope, rev, force=options.force)
+          work.checkout(scope, rev, force=options.force, mode=options.mode)
       else:
         require_opt(command, "scope", options)
-        work.checkout(options.scope, rev, force=options.force)
+        work.checkout(options.scope, rev, force=options.force, mode=options.mode)
     else:
       populate_options_from_cwd(cwd, options)
       work = WorkingDir(options.work_dir, config)
@@ -3030,13 +3298,15 @@ def run_command(command, command_args, options):
           checkouts = work.checkouts()
           for checkout in checkouts:
             prefix = None if options.short_paths else checkout.scope
-            sys.stdout.write(work.status(checkout.scope, mod_all=options.mod_all).to_summary(prefix=prefix))
+            sys.stdout.write(work.status(checkout.scope, mod_all=options.mod_all, full=options.full).to_summary(prefix=prefix))
         else:
           require_opt(command, "scope", options)
           log.debug("status for scope '%s'", options.scope)
           prefix = None if options.short_paths else options.scope
-          sys.stdout.write(work.status(options.scope, mod_all=options.mod_all).to_summary(prefix=prefix))
+          sys.stdout.write(work.status(options.scope, mod_all=options.mod_all, full=options.full).to_summary(prefix=prefix))
       elif command == "commit":
+        if options.mode is not None:
+          raise InvalidOperation("%s --mode is not allowed; use track/untrack commands first" % command)
         require_opt(command, "user", options)
         require_opt(command, "message", options)
         commit_time = parse_datetime(options.date, assume_utc=options.assume_utc) if options.date else None
@@ -3072,8 +3342,10 @@ def run_command(command, command_args, options):
             work.update(checkout.scope, rev, force=options.force)
           if scopes_to_checkout:
             for scope in scopes_to_checkout:
-              work.checkout(scope, rev, force=options.force)
+              work.checkout(scope, rev, force=options.force, mode=options.mode)
       elif command == "revert":
+        if options.mode is not None:
+          raise InvalidOperation("%s --mode is not allowed; use track/untrack commands first" % command)
         if options.all:
           raise InvalidOperation("revert --all doesn't make much sense; try commit --work instead")
         elif options.rev:
@@ -3089,6 +3361,35 @@ def run_command(command, command_args, options):
           # TODO support revert to specified revision
           require_opt(command, "scope", options)
           work.revert(options.scope, path_list=command_args)
+      elif command in ["track", "untrack"]:
+        if options.all:
+          raise InvalidOperation("%s --all doesn't make much sense; try --work instead" % command)
+        elif options.rev:
+          raise NotImplementedError("sorry, %s to specified revision not yet implemented" % command)
+        elif (options.mode is None and not command_args) or (options.mode == Mode.AUTO and (command == "untrack" or (command == "track" and len(command_args) > 0))):
+          raise InvalidOperation("%s doesn't make much sense" % " ".join([command, "--mode " + options.mode if options.mode else ""] + command_args))
+        elif options.force:
+          raise InvalidOperation("do not use force option with %s command" % command)
+        elif options.work:
+          checkouts = work.checkouts()
+        else:
+          require_opt(command, "scope", options)
+          checkouts = [Checkout(options.scope, work.get_checkout_rev(options.scope), None)]
+        if command == "track":
+          if len(command_args) > 0:
+            # track some files
+            for checkout in checkouts:
+              work.track(checkout.scope, track_path_list=command_args, mode=options.mode, no_download=options.no_download)
+          else:
+            # Change mode
+            for checkout in checkouts:
+              work.track(checkout.scope, mode=options.mode, no_download=options.no_download)
+        elif command == "untrack":
+          # untrack some files
+          for checkout in checkouts:
+            work.untrack(checkout.scope, command_args, options.mode)
+        else:
+          assert False
   else:
     assert False
 
@@ -3115,7 +3416,7 @@ def main():
   parser.add_option('-v', '--verbose', help='verbose output', dest='verbose', action='store_true')
   parser.add_option('-a', '--recursive', help='copy recursively (for list, copy)', dest='recursive', action='store_true')
   parser.add_option('--all', help='perform operation on all scopes (for checkout, update)', dest='all', action='store_true')
-  parser.add_option('--work', help='perform operation on checked out (working) scopes (for status, update, commit, tag)', dest='work', action='store_true')
+  parser.add_option('--work', help='perform operation on checked out (working) scopes (for status, update, commit, tag, track, untrack)', dest='work', action='store_true')
   parser.add_option('--mod-all', help='mark every file as modified, skipping content checks (for commit, status)', dest='mod_all', action='store_true')
   parser.add_option('--compression', help='compression scheme to use (e.g. "raw" or "lzo")', dest='compression')
   parser.add_option('--short-paths', help='do not include scope part of path in "list", "status", etc.', dest='short_paths', action='store_true')
@@ -3126,6 +3427,9 @@ def main():
   parser.add_option('--utc', help='when parsing times, assume UTC if not specified', dest='assume_utc', action='store_true')
   parser.add_option('--debug', help='verbose output with debugging details', dest='debug', action='store_true')
   parser.add_option('--version', help='show version information', dest='version', action='store_true')
+  parser.add_option('--mode', help='specify tracking mode: %s (for checkout, track, untrack)' % Mode.values(), dest='mode', action='store', type='string', default=None)
+  parser.add_option('--no-download', help='track files without copying them to working directory (for track)', dest='no_download', action='store_true')
+  parser.add_option('--full', help='show full status when in "%s" tracking mode (for status)' % Mode.PARTIAL, dest='full', action='store_true')
 
   (options, args) = parser.parse_args()
 
@@ -3184,19 +3488,14 @@ if __name__ == '__main__':
 
 # TODO:
 # major missing features:
-#   nested scopes
+#   support nested scopes: manage creation, regenerations of manifests, etc.; also automatic recursive scope updates/commits
 #   locking during commit and tag operations (NoLockingService is used by default, need to acquire locks for whole operation).
+#   use sqlight3 instead of writing checkout-state in order to make zinc multi-process safe
+#   implement s3 retry logic on top of boto retry logic, E.g., boto does not retry for 404 but it could be due to s3 eventual consistency
+#   support wildcards *
 # other important features:
-#   ability to checkout only certain files
-#     have tracking state per scope -- by default "full", but optionally "partial"; in the latter state only some files are tracked
-#     have checkout flag with --partial flag indicating checkout is partial tracking
-#     have a track command (with an optional --no-download option) that adds files to the tracking list
-#         zinc checkout -s abc --tracking=auto
-#         zinc checkout -s abc --tracking=empty
-#         zinc track -s abc some/file
-#         zinc status -s abc 
-#         zinc commit -s abc
 #   annotations (like tags, but key-value pairs; for example "deploy_date=20120801")
+#   extend the Changelist class to include Unmodified and Invalid states so that we can show a list of tracked files for example.
 # error message when lzop not installed could be more helpful
 # run on all applicable scopes for --work (and --all), and fail or succeed for each
 # tolerate (with warning) a "update --work" when scope has been deleted; also a delscope command
@@ -3240,7 +3539,6 @@ if __name__ == '__main__':
 # finish basic branch support: add -b option, newbranch command, and "branch" argument across all function calls that take a scope
 # multi-scope support: for commits, automatically identify all enclosing scopes for a commit, and commit each one
 # list and copy for paths that span more than one scope
-# support nested scopes: manage creation, regenerations of manifests, etc.; also automatic recursive scope updates/commits
 # file sizes (and optionally hashes, dates, etc.) in manifest; will make detailed listings fast
 # nicer error messages for invalid revisions
 # support symlinks

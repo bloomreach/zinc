@@ -5,6 +5,9 @@
 Joshua Levy  
 2012-11-06 (covers Zinc version 0.3.16)
 
+Kazuyuki Tanimura
+Update on 2013-04-11 (covers Zinc version 0.3.18)
+
 
 ## Motivation
 
@@ -224,6 +227,56 @@ is good for scripts or situations where you only want to examine a few files.
     zinc tags -R s3://my-bucket/zinc/my-repo -s customer/acme my-acme
     zinc log -R s3://my-bucket/zinc/my-repo -s customer/acme my-acme
 
+## Partial Checkout (New in version 0.3.18)
+###Objectives:
+Checking out an entire scope sometimes requires GB order of file transfer in total. The new version of zinc allows partial checkouts
+
+Here, we will have an idea of partial tracking mode v.s. auto tracking mode (i.e. current behavior, all local changes will be picked up). In partial tracking mode, only tracked files will show up in status or be allowed to be committed. Zinc checkout command with "--mode partial" option puts the checked-out scope in partial tracking mode. The default is "--mode auto" We can also switch between these two modes using track/untrack commands. Moreover, we can track/untrack only specific files as well.
+
+###Example Usage:
+    # checkout in tracking-mode
+    zinc checkout -s <scope> s3://my-bucket/zinc/my-repo --mode partial # => nothing will be downloaded
+
+    # we can track files after checking out using track command
+    zinc track -s <scope> dir1/file1 # => This path needs to be relative path(s) from scope dir
+
+    # even you add a random file, zinc status does not pick it up
+    touch scope/test.txt
+    zinc status -s <scope> # => will not show test.txt
+    zinc status -s <scope> --full # => the new --full option will show test.txt as an untracked file
+
+    # we can untrack files so that zinc update will ignore the files
+    zinc untrack -s <scope> dir1/file2
+
+    # "zinc commit" commits only tracked files and changed files
+    zinc commit -s <scope> -u <user> -m <message>
+
+    # when we track a file that already exists in local file, it preserve the file and your local change is safe.
+    zinc track -s <scope> dir1/file2 # => zinc assumes that your local change is ahead of repository
+    zinc status # => this should show that dir1/file2 is modified if it was modified
+
+    # we can delete it or rename it
+    rm scope/dir1/file2
+    zinc untrack -s <scope> dir1/file2 # => we can also untrack first before deleting it
+
+    # --no-download helps deleting files faster
+    zinc track -s <scope> dir1/file2 --no-download # => it does track file2; however, local copy won't be created (fast!)
+    zinc status -s <scope> # => status will show that file2 is removed
+    zinc commit -s <scope> # => commit it so that file2 will be removed from remote repository
+
+    # put all local checked out scopes with --work option
+    zinc track --work <maybe with filenames>
+
+    # Let's go back to auto tracking mode
+    zinc track -s <scope> --mode auto
+
+    # Now you see test.txt that we added earlier in the status
+    zinc status # => it picks up test.txt as a newly added file
+
+###What is the catch??
+* After updating Zinc, Zinc migrates its internal logging file "checkout-state" to a new format. After this migration, older version of Zinc cannot pick up the checked out states/files. Mixed usage of old version and new version of Zinc is prohibited!!
+* If there is a local file with the same name as the file you are trying to track, Zinc assumes that the local copy in working directory is the newest. It does not do automatic rebase. The author is responsible to make sure that the change is on top of the current data.
+* "Create a new file => track it => remove it" puts the file in an invalid state. Currently we can catch it only when we commit it (zinc status gives you a warning). The remote repo is safe and we leave this behavior for now.
 
 
 ## Limitations and Notes

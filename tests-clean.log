@@ -3,7 +3,7 @@ Work directory: /tmp/zinc-testing/work
 
 # Record Python version.
 python -V
-Python 2.7.1
+Python 2.7.4
 
 ### Setup
 zinc init $root_uri
@@ -166,7 +166,7 @@ zinc commit -s test_scope -u user3 -m "another commit"
 committing changes (1 adds, 0 rms, 0 mods)
 A test_scope//file7
 uploading: /tmp/zinc-testing/work/work_dir/test_scope/.tmp.compressed.file7._REV_ to _REPO_ROOT_://repo/_s/test_scope/_f/_REV_/file7.lzo
-test_scope_rev=$(zinc id -s test_scope)
+test_scope_rev=`zinc id -s test_scope`
 zinc id -s test_scope
 zinc tag -s test_scope -r $test_scope_rev my-third-tag
 tagging scope 'test_scope' with tag 'my-third-tag' at revision _REV_
@@ -215,6 +215,34 @@ test_scope
 
 ### Second working dir
 cd $work
+# show the log starting from tip even without checking out
+zinc log -R $root_uri -s test_scope
+rev: _REV_ _DATE_
+user: user3
+message: another commit
+changes: A file7
+
+rev: _REV_ _DATE_
+user: user3
+message: another commit!
+with multiple lines
+changes: R file5, A file6, M subdir1/file2
+
+rev: _REV_ _DATE_
+user: user2
+message: second commit
+changes: R file1, A file5, A subdir1/file3, A subdir2/file4
+
+rev: _REV_ _DATE_
+user: user1
+message: first commit
+changes: A file1, A subdir1/bigfile, A subdir1/file2
+
+rev: _REV_ _DATE_
+user: user0
+message: new scope at 'test_scope'
+changes: 
+
 zinc checkout -s test_scope -r my-first-tag $root_uri work_dir_alt
 initialized new working directory at: work_dir_alt
 checkout: scope 'test_scope' at revision _REV_ (5 files total)
@@ -294,11 +322,72 @@ update: scope 'test_scope' at revision _REV_ (7 files total)
 cd $work
 cd work_dir
 create_file test_scope/new_file_from_another_work_dir "contents"
+# show the log starting from the checkedout rev
+zinc log -s test_scope
+rev: _REV_ _DATE_
+user: user3
+message: another commit
+changes: A file7
+
+rev: _REV_ _DATE_
+user: user3
+message: another commit!
+with multiple lines
+changes: R file5, A file6, M subdir1/file2
+
+rev: _REV_ _DATE_
+user: user2
+message: second commit
+changes: R file1, A file5, A subdir1/file3, A subdir2/file4
+
+rev: _REV_ _DATE_
+user: user1
+message: first commit
+changes: A file1, A subdir1/bigfile, A subdir1/file2
+
+rev: _REV_ _DATE_
+user: user0
+message: new scope at 'test_scope'
+changes: 
+
 zinc update -s test_scope
 update: scope 'test_scope' at revision _REV_ (7 files total)
 updating files: 1 adds, 0 rms, 0 mods (have 1 adds, 0 rms, 0 mods of non-conflicting local changes)
 downloading: /tmp/zinc-testing/work/work_dir/.zinc/cache/contents/_s/test_scope/_f/_REV_/added_file.lzo from _REPO_ROOT_://repo/_s/test_scope/_f/_REV_/added_file.lzo
 copying from cache: /tmp/zinc-testing/work/work_dir/test_scope/.tmp-copy._REV_/.tmp.compressed-download.added_file._REV_ from /tmp/zinc-testing/work/work_dir/.zinc/cache/contents/_s/test_scope/_f/_REV_/added_file.lzo
+# show the log starting from tip
+zinc log -s test_scope
+rev: _REV_ _DATE_
+user: user4
+message: commit from a different working dir
+changes: A added_file
+
+rev: _REV_ _DATE_
+user: user3
+message: another commit
+changes: A file7
+
+rev: _REV_ _DATE_
+user: user3
+message: another commit!
+with multiple lines
+changes: R file5, A file6, M subdir1/file2
+
+rev: _REV_ _DATE_
+user: user2
+message: second commit
+changes: R file1, A file5, A subdir1/file3, A subdir2/file4
+
+rev: _REV_ _DATE_
+user: user1
+message: first commit
+changes: A file1, A subdir1/bigfile, A subdir1/file2
+
+rev: _REV_ _DATE_
+user: user0
+message: new scope at 'test_scope'
+changes: 
+
 zinc commit -s test_scope -u user5 -m "committing from original working dir"
 committing changes (1 adds, 0 rms, 0 mods)
 A test_scope//new_file_from_another_work_dir
@@ -324,15 +413,14 @@ cat .zinc/checkout-state
 # znval 1.0
 # Checkout state for this working directory, for all currently checked out scopes.
 %%>>checkouts
-another_scope	_REV_
-test_scope	_REV_
-
+mode=auto;rev=_REV_;scope=another_scope
+mode=auto;rev=_REV_;scope=test_scope
 %%>>fingerprints
-test_scope/file5	type=file;mtime=_MTIME_;size=14;md5=1a9849d8795ab13d6e9eac9bff73d0eb
-test_scope/subdir1/bigfile	type=file;mtime=_MTIME_;size=50000000;md5=6c89658d051ac5d1938ae1b749700753
-test_scope/subdir1/file2	type=file;mtime=_MTIME_;size=18;md5=4c6a3c4dc7a6778f52f5d424a0bbb1b0
-test_scope/subdir1/file3	type=file;mtime=_MTIME_;size=14;md5=1a9849d8795ab13d6e9eac9bff73d0eb
-test_scope/subdir2/file4	type=file;mtime=_MTIME_;size=36;md5=0764db4c531b547fbffd01e2341d0851
+test_scope/file5	md5=1a9849d8795ab13d6e9eac9bff73d0eb;mtime=_MTIME_;size=14;state=tracked;type=file
+test_scope/subdir1/bigfile	md5=6c89658d051ac5d1938ae1b749700753;mtime=_MTIME_;size=50000000;state=tracked;type=file
+test_scope/subdir1/file2	md5=4c6a3c4dc7a6778f52f5d424a0bbb1b0;mtime=_MTIME_;size=18;state=tracked;type=file
+test_scope/subdir1/file3	md5=1a9849d8795ab13d6e9eac9bff73d0eb;mtime=_MTIME_;size=14;state=tracked;type=file
+test_scope/subdir2/file4	md5=0764db4c531b547fbffd01e2341d0851;mtime=_MTIME_;size=36;state=tracked;type=file
 
 
 ### Third working dir again
@@ -374,20 +462,19 @@ cat .zinc/checkout-state
 # znval 1.0
 # Checkout state for this working directory, for all currently checked out scopes.
 %%>>checkouts
-another_scope	_REV_
-new_scope	_REV_
-test_scope	_REV_
-
+mode=auto;rev=_REV_;scope=another_scope
+mode=auto;rev=_REV_;scope=new_scope
+mode=auto;rev=_REV_;scope=test_scope
 %%>>fingerprints
-new_scope/file_in_new_scope	type=file;mtime=_MTIME_;size=36;md5=ed16d1427acf76edbe88f69cf015cff1
-test_scope/added_file	type=file;mtime=_MTIME_;size=14;md5=57d565c800694cc54b8783feeafb85e2
-test_scope/file7	type=file;mtime=_MTIME_;size=16;md5=6071875417947adc75eb2129e49bcca3
-test_scope/file8	type=file;mtime=_MTIME_;size=20;md5=5a28465185cf35544be29d42a74c3f5f
-test_scope/new_file_from_another_work_dir	type=file;mtime=_MTIME_;size=9;md5=e66545a2155380046fce3fdbd32a6b4f
-test_scope/subdir1/bigfile	type=file;mtime=_MTIME_;size=50000000;md5=6c89658d051ac5d1938ae1b749700753
-test_scope/subdir1/file2	type=file;mtime=_MTIME_;size=13;md5=9eb25d3d6dbffd757fc09b4f879bafda
-test_scope/subdir1/file3	type=file;mtime=_MTIME_;size=14;md5=1a9849d8795ab13d6e9eac9bff73d0eb
-test_scope/subdir2/file4	type=file;mtime=_MTIME_;size=36;md5=0764db4c531b547fbffd01e2341d0851
+new_scope/file_in_new_scope	md5=ed16d1427acf76edbe88f69cf015cff1;mtime=_MTIME_;size=36;state=tracked;type=file
+test_scope/added_file	md5=57d565c800694cc54b8783feeafb85e2;mtime=_MTIME_;size=14;state=tracked;type=file
+test_scope/file7	md5=6071875417947adc75eb2129e49bcca3;mtime=_MTIME_;size=16;state=tracked;type=file
+test_scope/file8	md5=5a28465185cf35544be29d42a74c3f5f;mtime=_MTIME_;size=20;state=tracked;type=file
+test_scope/new_file_from_another_work_dir	md5=e66545a2155380046fce3fdbd32a6b4f;mtime=_MTIME_;size=9;state=tracked;type=file
+test_scope/subdir1/bigfile	md5=6c89658d051ac5d1938ae1b749700753;mtime=_MTIME_;size=50000000;state=tracked;type=file
+test_scope/subdir1/file2	md5=9eb25d3d6dbffd757fc09b4f879bafda;mtime=_MTIME_;size=13;state=tracked;type=file
+test_scope/subdir1/file3	md5=1a9849d8795ab13d6e9eac9bff73d0eb;mtime=_MTIME_;size=14;state=tracked;type=file
+test_scope/subdir2/file4	md5=0764db4c531b547fbffd01e2341d0851;mtime=_MTIME_;size=36;state=tracked;type=file
 
 
 # Test error suppression
@@ -478,6 +565,122 @@ mkdir -p test_scope/.tmp-copy._REV_/some-path
 create_file test_scope/.tmp-copy._REV_/some-path/junk5 "this whole directory should be ignored"
 zinc status --work 
 
+### Test track, untrack, and checkout --mode partial, and status --full
+cd $work
+zinc checkout -s test_scope --mode partial $root_uri work_dir_track
+initialized new working directory at: work_dir_track
+checkout: scope 'test_scope' at revision _REV_ (10 files total)
+cd work_dir_track
+zinc tag -s test_scope my-fourth-tag
+tagging scope 'test_scope' with tag 'my-fourth-tag' at revision _REV_
+zinc track -s test_scope subdir1/file3
+track: scope 'test_scope' at revision _REV_ in tracking mode 'partial'
+no conflicting local changes
+updating files: 1 adds, 0 rms, 0 mods
+downloading: /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_s/subdir1/_f/_REV_/file3.lzo from _REPO_ROOT_://repo/_s/test_scope/_s/subdir1/_f/_REV_/file3.lzo
+copying from cache: /tmp/zinc-testing/work/work_dir_track/test_scope/.tmp-copy._REV_/subdir1/.tmp.compressed-download.file3._REV_ from /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_s/subdir1/_f/_REV_/file3.lzo
+zinc status -s test_scope --full
+status: scope 'test_scope' at revision _REV_ in tracking mode 'partial'
+create_file test_scope/subdir1/file3 "modify contents"
+zinc status -s test_scope --full
+status: scope 'test_scope' at revision _REV_ in tracking mode 'partial'
+M test_scope//subdir1/file3
+zinc commit -s test_scope -u user8 -m "partial commiting"
+committing changes (0 adds, 0 rms, 1 mods)
+M test_scope//subdir1/file3
+uploading: /tmp/zinc-testing/work/work_dir_track/test_scope/subdir1/.tmp.compressed.file3._REV_ to _REPO_ROOT_://repo/_s/test_scope/_s/subdir1/_f/_REV_/file3.lzo
+zinc status -s test_scope --full
+status: scope 'test_scope' at revision _REV_ in tracking mode 'partial'
+zinc untrack -s test_scope subdir1/file3
+zinc track -s test_scope subdir1/file3
+track: scope 'test_scope' at revision _REV_ in tracking mode 'partial'
+preserving files: 1 adds, 0 rms, 0 mods (assuming these changes in working directory are ahead of those in repository)
+zinc status -s test_scope --full #=> should not say that subdir1/file3 is modifiled since it is not modified
+status: scope 'test_scope' at revision _REV_ in tracking mode 'partial'
+track: scope 'test_scope' at revision _REV_ in tracking mode 'partial'
+no conflicting local changes
+invalid operation: missing file: '/tmp/zinc-testing/work/work_dir_track/test_scope/subdir1/file11'
+(got expected error: status 1)
+create_file test_scope/subdir1/file11 "new file"
+zinc track -s test_scope subdir1/file11
+track: scope 'test_scope' at revision _REV_ in tracking mode 'partial'
+no conflicting local changes
+newly tracking: 1 adds, 0 rms, 0 mods (files that are not in repository yet)
+create_file test_scope/untracked "this files is not tracked"
+zinc status -s test_scope --full #=> test_scope/untracked is not tracked yet
+status: scope 'test_scope' at revision _REV_ in tracking mode 'partial'
+Untracked local file: test_scope/untracked
+A test_scope//subdir1/file11
+zinc track -s test_scope --mode auto #=> switch to auto mode
+track: scope 'test_scope' at revision _REV_ in tracking mode 'auto'
+no conflicting local changes
+updating files: 9 adds, 0 rms, 0 mods
+downloading: /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_f/_REV_/added_file.lzo from _REPO_ROOT_://repo/_s/test_scope/_f/_REV_/added_file.lzo
+copying from cache: /tmp/zinc-testing/work/work_dir_track/test_scope/.tmp-copy._REV_/.tmp.compressed-download.added_file._REV_ from /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_f/_REV_/added_file.lzo
+downloading: /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_f/_REV_/file10.lzo from _REPO_ROOT_://repo/_s/test_scope/_f/_REV_/file10.lzo
+copying from cache: /tmp/zinc-testing/work/work_dir_track/test_scope/.tmp-copy._REV_/.tmp.compressed-download.file10._REV_ from /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_f/_REV_/file10.lzo
+downloading: /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_f/_REV_/file7.lzo from _REPO_ROOT_://repo/_s/test_scope/_f/_REV_/file7.lzo
+copying from cache: /tmp/zinc-testing/work/work_dir_track/test_scope/.tmp-copy._REV_/.tmp.compressed-download.file7._REV_ from /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_f/_REV_/file7.lzo
+downloading: /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_f/_REV_/file8.lzo from _REPO_ROOT_://repo/_s/test_scope/_f/_REV_/file8.lzo
+copying from cache: /tmp/zinc-testing/work/work_dir_track/test_scope/.tmp-copy._REV_/.tmp.compressed-download.file8._REV_ from /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_f/_REV_/file8.lzo
+downloading: /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_f/_REV_/file9.lzo from _REPO_ROOT_://repo/_s/test_scope/_f/_REV_/file9.lzo
+copying from cache: /tmp/zinc-testing/work/work_dir_track/test_scope/.tmp-copy._REV_/.tmp.compressed-download.file9._REV_ from /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_f/_REV_/file9.lzo
+downloading: /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_f/_REV_/new_file_from_another_work_dir.lzo from _REPO_ROOT_://repo/_s/test_scope/_f/_REV_/new_file_from_another_work_dir.lzo
+copying from cache: /tmp/zinc-testing/work/work_dir_track/test_scope/.tmp-copy._REV_/.tmp.compressed-download.new_file_from_another_work_dir._REV_ from /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_f/_REV_/new_file_from_another_work_dir.lzo
+downloading: /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_s/subdir1/_f/_REV_/bigfile.lzo from _REPO_ROOT_://repo/_s/test_scope/_s/subdir1/_f/_REV_/bigfile.lzo
+copying from cache: /tmp/zinc-testing/work/work_dir_track/test_scope/.tmp-copy._REV_/subdir1/.tmp.compressed-download.bigfile._REV_ from /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_s/subdir1/_f/_REV_/bigfile.lzo
+downloading: /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_s/subdir1/_f/_REV_/file2.lzo from _REPO_ROOT_://repo/_s/test_scope/_s/subdir1/_f/_REV_/file2.lzo
+copying from cache: /tmp/zinc-testing/work/work_dir_track/test_scope/.tmp-copy._REV_/subdir1/.tmp.compressed-download.file2._REV_ from /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_s/subdir1/_f/_REV_/file2.lzo
+downloading: /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_s/subdir2/_f/_REV_/file4.lzo from _REPO_ROOT_://repo/_s/test_scope/_s/subdir2/_f/_REV_/file4.lzo
+copying from cache: /tmp/zinc-testing/work/work_dir_track/test_scope/.tmp-copy._REV_/subdir2/.tmp.compressed-download.file4._REV_ from /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_s/subdir2/_f/_REV_/file4.lzo
+zinc status -s test_scope --full #=> test_scope/untracked will show up as well as other changes
+status: scope 'test_scope' at revision _REV_ in tracking mode 'auto'
+A test_scope//subdir1/file11
+A test_scope//untracked
+zinc track -s test_scope --mode partial #=> switch back to partial mode
+track: scope 'test_scope' at revision _REV_ in tracking mode 'partial'
+no conflicting local changes
+zinc commit -s test_scope -u user8 -m "partial commiting2"
+committing changes (1 adds, 0 rms, 0 mods)
+A test_scope//subdir1/file11
+uploading: /tmp/zinc-testing/work/work_dir_track/test_scope/subdir1/.tmp.compressed.file11._REV_ to _REPO_ROOT_://repo/_s/test_scope/_s/subdir1/_f/_REV_/file11.lzo
+zinc status -s test_scope
+rm test_scope/untracked
+zinc untrack -s test_scope subdir1/file11
+rm test_scope/subdir1/file11
+zinc track -s test_scope subdir1/file11 --no-download #=> does not perform download
+track: scope 'test_scope' at revision _REV_ in tracking mode 'partial'
+no conflicting local changes
+updating files: 1 adds, 0 rms, 0 mods
+zinc status -s test_scope #=> shows that subdir1/file11 is deleted
+R test_scope//subdir1/file11
+zinc commit -s test_scope -u user8 -m "partial commiting3" #=> delete subdir1/file11 without downloading it
+committing changes (0 adds, 1 rms, 0 mods)
+R test_scope//subdir1/file11
+zinc update -s test_scope -r my-fourth-tag #=> go back to previous rev
+update: scope 'test_scope' at revision _REV_ (10 files total)
+updating files: 0 adds, 0 rms, 1 mods (no conflicting local changes)
+copying from cache: /tmp/zinc-testing/work/work_dir_track/test_scope/.tmp-copy._REV_/subdir1/.tmp.compressed-download.file3._REV_ from /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_s/subdir1/_f/_REV_/file3.lzo
+zinc untrack -s test_scope subdir1/file3
+zinc update -s test_scope
+update: scope 'test_scope' at revision _REV_ (10 files total)
+zinc track -s test_scope subdir1/file3
+track: scope 'test_scope' at revision _REV_ in tracking mode 'partial'
+preserving files: 1 adds, 0 rms, 0 mods (assuming these changes in working directory are ahead of those in repository)
+zinc status -s test_scope #=> shows that subdir1/file3 is modifiled
+M test_scope//subdir1/file3
+local changes conflict with update for scope 'test_scope':
+M subdir1/file3
+invalid operation: Zinc does not currently support automatic merges: must revert locally changed files, update, and then manually merge
+(got expected error: status 1)
+cat test_scope/subdir1/file3 #=> should be "more contents"
+more contents
+zinc revert -s test_scope #=> this should download the newest version of subdir1/file3
+downloading: /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_s/subdir1/_f/_REV_/file3.lzo from _REPO_ROOT_://repo/_s/test_scope/_s/subdir1/_f/_REV_/file3.lzo
+copying from cache: /tmp/zinc-testing/work/work_dir_track/test_scope/.tmp-copy._REV_/subdir1/.tmp.compressed-download.file3._REV_ from /tmp/zinc-testing/work/work_dir_track/.zinc/cache/contents/_s/test_scope/_s/subdir1/_f/_REV_/file3.lzo
+cat test_scope/subdir1/file3 #=> should be "modify contents"
+modify contents
+zinc status -s test_scope
 
 
 ### Another working dir, but no caching
@@ -502,13 +705,13 @@ ls_pretty work_dir_all/.zinc
           72 work_dir_all/.zinc/cache/contents/_s/test_scope/_s/subdir1/_f/_REV_/file2.lzo
           73 work_dir_all/.zinc/cache/contents/_s/test_scope/_s/subdir1/_f/_REV_/file3.lzo
           95 work_dir_all/.zinc/cache/contents/_s/test_scope/_s/subdir2/_f/_REV_/file4.lzo
-        1141 work_dir_all/.zinc/cache/state
-        1001 work_dir_all/.zinc/cache/state.orig
-        1287 work_dir_all/.zinc/checkout-state
-        1287 work_dir_all/.zinc/checkout-state.orig
+        1253 work_dir_all/.zinc/cache/state
+        1099 work_dir_all/.zinc/cache/state.orig
+        1500 work_dir_all/.zinc/checkout-state
+        1500 work_dir_all/.zinc/checkout-state.orig
           49 work_dir_all/.zinc/config
 ls_pretty work_dir_no_cache/.zinc
-         648 work_dir_no_cache/.zinc/checkout-state
+         737 work_dir_no_cache/.zinc/checkout-state
           49 work_dir_no_cache/.zinc/config
 
 ### Repo-only commands
@@ -614,6 +817,21 @@ user: user7
 message: recommitting with compression on for all files
 changes: M added_file, M file10, M file7, M file8, M file9, M new_file_from_another_work_dir, M subdir1/bigfile, M subdir1/file2, M subdir1/file3, M subdir2/file4
 
+rev: _REV_ _DATE_
+user: user8
+message: partial commiting
+changes: M subdir1/file3
+
+rev: _REV_ _DATE_
+user: user8
+message: partial commiting2
+changes: A subdir1/file11
+
+rev: _REV_ _DATE_
+user: user8
+message: partial commiting3
+changes: R subdir1/file11
+
 zinc tags -R $root_uri -s test_scope -r :tip --date '>2010-01-02'
 my-first-tag	_REV_
 my-second-tag	_REV_
@@ -621,6 +839,7 @@ my-second-tag-duplicate	_REV_
 my-third-tag	_REV_
 tagging-things-at-once	_REV_
 mixed-compression	_REV_
+my-fourth-tag	_REV_
 zinc locate -R $root_uri -s test_scope -r my-second-tag subdir1/file2
 lzo	_REPO_ROOT_://repo/_s/test_scope/_s/subdir1/_f/_REV_/file2.lzo
 zinc locate -R $root_uri -s test_scope file9
@@ -683,9 +902,9 @@ zinc _manifest -R $root_uri -s test_scope
 %%>>rev
 _REV_
 %%>>user
-user7
+user8
 %%>>message
-recommitting with compression on for all files
+partial commiting3
 %%>>time
 _TIMESTAMP_
 %%>>items
@@ -701,16 +920,7 @@ file.lzo	subdir1/file3	_s/subdir1/_f/_REV_/file3.lzo
 file.lzo	subdir2/file4	_s/subdir2/_f/_REV_/file4.lzo
 
 %%>>changelist
-M	added_file
-M	file10
-M	file7
-M	file8
-M	file9
-M	new_file_from_another_work_dir
-M	subdir1/bigfile
-M	subdir1/file2
-M	subdir1/file3
-M	subdir2/file4
+R	subdir1/file11
 
 
 
@@ -745,6 +955,11 @@ chmod +wx $work/forbidden
 
 # Set up a big file so we can interrupt operations.
 cd $work/work_dir_all
+zinc update -s test_scope
+update: scope 'test_scope' at revision _REV_ (10 files total)
+updating files: 0 adds, 0 rms, 1 mods (no conflicting local changes)
+downloading: /tmp/zinc-testing/work/work_dir_all/.zinc/cache/contents/_s/test_scope/_s/subdir1/_f/_REV_/file3.lzo from _REPO_ROOT_://repo/_s/test_scope/_s/subdir1/_f/_REV_/file3.lzo
+copying from cache: /tmp/zinc-testing/work/work_dir_all/test_scope/.tmp-copy._REV_/subdir1/.tmp.compressed-download.file3._REV_ from /tmp/zinc-testing/work/work_dir_all/.zinc/cache/contents/_s/test_scope/_s/subdir1/_f/_REV_/file3.lzo
 create_file_of_size 100 test_scope/subdir1/bigfile-uncompressed
 100+0 records in
 100+0 records out
@@ -774,8 +989,8 @@ sleep 0.2
 jobs
 [1]+  Running                 zinc copy -R $root_uri -s test_scope subdir1/bigfile-uncompressed copies/bigfile-copy1 > logs/copy1.log 2>&1 &
 kill -KILL %1
-./tests.sh: line 343:_PID_ Killed                  zinc copy -R $root_uri -s test_scope subdir1/bigfile-uncompressed copies/bigfile-copy1 > logs/copy1.log 2>&1
 sleep 0.2
+./tests.sh: line 390:_PID_ Killed: 9               zinc copy -R $root_uri -s test_scope subdir1/bigfile-uncompressed copies/bigfile-copy1 > logs/copy1.log 2>&1
 jobs
 ls_pretty_nosize copies
 copies/bigfile-copy1.partial._REV_
@@ -800,6 +1015,7 @@ sleep 0.2
 jobs
 ls_pretty_nosize copies
 copies/bigfile-copy1.partial._REV_
+copies/bigfile-copy2.partial._REV_
 copies/file2-copy
 copies/file2-copy2
 copies/file3-copy
