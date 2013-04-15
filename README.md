@@ -5,8 +5,8 @@
 Joshua Levy  
 2012-11-06 (covers Zinc version 0.3.16)
 
-Kazuyuki Tanimura
-Update on 2013-04-11 (covers Zinc version 0.3.18)
+Kazuyuki Tanimura  
+Update on 2013-04-11 (covers Zinc version 0.3.19)
 
 
 ## Motivation

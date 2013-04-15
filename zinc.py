@@ -27,6 +27,7 @@ Authors: Joshua Levy, Srinath Sridhar, Kazuyuki Tanimura
 #
 # Revision history:
 #
+# 0.3.19  Retry downloading for S3 exceptions
 # 0.3.18  Add track/untrack commands, checkout --mode option, and status --full option
 # 0.3.17  Zinc log command now shows the log from the checked out revision instead of tip.
 # 0.3.16  Open source with Apache License.
@@ -53,7 +54,7 @@ import boto
 from boto.s3.connection import S3Connection # XXX seems to be needed to initialize boto module correctly
 
 # Version of this code.
-ZINC_VERSION = "0.3.18"
+ZINC_VERSION = "0.3.19"
 # Version of this repository implementation.
 REPO_VERSION = "0.3"
 REPO_VERSIONS_SUPPORTED = ["0.2", "0.3"]
@@ -1234,7 +1235,16 @@ class S3Store(Store):
       # TODO We should also validate the MD5 of the local path against what S3
       # lists, ideally computing the MD5 during the download.
       # Boto sets modification time on file.
-      k.get_contents_to_filename(tmp_path)
+      try:
+        # boto does not retry for 404 exceptions; however, Zinc sometimes encounters it due to the S3 eventual consistency
+        k.get_contents_to_filename(tmp_path)
+      except Exception, e:
+        # retry one more time
+        log.warn("S3 failed downloading '%s', reason: '%s'", source_path, e)
+        if os.path.exists(tmp_path):
+          os.remove(tmp_path)
+        k.get_contents_to_filename(tmp_path) # TODO retry multiple times
+        log.warn("retrying %s succeeded", source_path)
 
       # Unfortunately, the logic to get the MD5 from S3 is a bit convoluted. First look for our own header.
       md5 = k.get_metadata(ZINC_S3_MD5_NAME)
@@ -2390,7 +2400,7 @@ class CheckoutState(object):
         elif fp.state == FileState.ToBeTracked and self.scope_mode(scope) == Mode.PARTIAL:
           full_path = join_path(self.work_dir, local_path)
           if not os.path.exists(full_path):
-            log.warn("Warning: '%s' is newly tracked but missing in the working directory; please untrack it." % full_path)
+            log.warn("Warning: '%s' is newly tracked but missing in the working directory; please untrack it.", full_path)
     return fingerprints
 
   def update_checkout_rev(self, scope, rev):
@@ -3491,7 +3501,6 @@ if __name__ == '__main__':
 #   support nested scopes: manage creation, regenerations of manifests, etc.; also automatic recursive scope updates/commits
 #   locking during commit and tag operations (NoLockingService is used by default, need to acquire locks for whole operation).
 #   use sqlight3 instead of writing checkout-state in order to make zinc multi-process safe
-#   implement s3 retry logic on top of boto retry logic, E.g., boto does not retry for 404 but it could be due to s3 eventual consistency
 #   support wildcards *
 # other important features:
 #   annotations (like tags, but key-value pairs; for example "deploy_date=20120801")
