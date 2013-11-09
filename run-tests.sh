@@ -34,6 +34,7 @@ cat $full_log \
   | sed -r 's!(s3|file)://.*zinc-testing!_REPO_ROOT_:/!g' \
   | sed -r 's/[ 0-9]+ Killed/_PID_ Killed/g' \
   | sed -r 's/\/private\/tmp\//\/tmp\//g' \
+  | sed -r 's/\/mnt\/tmp\//\/tmp\//g' \
   > $clean_log
 
 echo "Done."

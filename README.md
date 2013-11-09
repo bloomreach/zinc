@@ -6,7 +6,7 @@ Joshua Levy
 2012-11-06 (covers Zinc version 0.3.16)
 
 Kazuyuki Tanimura  
-Update on 2013-04-11 (covers Zinc version 0.3.19)
+Update on 2013-05-14 (covers Zinc version 0.3.27)
 
 
 ## Motivation
@@ -226,6 +226,8 @@ is good for scripts or situations where you only want to examine a few files.
     # Other commands work directly on the repository too:
     zinc tags -R s3://my-bucket/zinc/my-repo -s customer/acme my-acme
     zinc log -R s3://my-bucket/zinc/my-repo -s customer/acme my-acme
+    zinc locate -R s3://my-bucket/zinc/my-repo -s customer/acme related
+    zinc locate -a -R s3://my-bucket/zinc/my-repo -s customer/acme subdir1
 
 ## Partial Checkout (New in version 0.3.18)
 ###Objectives:
@@ -272,6 +274,10 @@ Here, we will have an idea of partial tracking mode v.s. auto tracking mode (i.e
 
     # Now you see test.txt that we added earlier in the status
     zinc status # => it picks up test.txt as a newly added file
+
+    # We also support wildcard
+    zinc untrack -s test_scope "subdir1/*"
+    zinc track -a -s test_scope "*file*"
 
 ###What is the catch??
 * After updating Zinc, Zinc migrates its internal logging file "checkout-state" to a new format. After this migration, older version of Zinc cannot pick up the checked out states/files. Mixed usage of old version and new version of Zinc is prohibited!!

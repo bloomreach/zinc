@@ -207,6 +207,38 @@ zinc id -s test_scope
 zinc ids
 zinc scopes
 
+# Testing diff
+create_file test_scope/file1 "contents of file1"
+create_file test_scope/subdir1/file2 "contents of file2"
+rm test_scope/subdir1/file3
+zinc status -s test_scope
+zinc diff -s test_scope
+zinc diff -s test_scope file1
+zinc diff -s test_scope subdir1/file4
+zinc diff -s test_scope file1 subdir1/file2
+zinc revert -s test_scope
+zinc status -s test_scope
+zinc diff -s test_scope -r my-first-tag
+create_file test_scope/file1 "contents of file1"
+create_file test_scope/subdir1/file2 "contents of file2"
+rm test_scope/subdir1/file3
+zinc status -s test_scope
+zinc diff -s test_scope -r my-first-tag
+zinc diff -s test_scope -r my-first-tag file1
+zinc diff -s test_scope -r my-first-tag subdir1/file3
+zinc diff -s test_scope -r my-first-tag:my-second-tag
+zinc diff -s test_scope -r my-first-tag:my-second-tag file1
+zinc status -s test_scope
+zinc diff -s test_scope > test.patch
+zinc revert -s test_scope
+zinc status -s test_scope
+patch -p0 < test.patch
+zinc status -s test_scope
+zinc revert -s test_scope
+zinc diff -s test_scope
+rm test_scope/file1.orig
+rm test_scope/subdir1/file2.orig
+
 ### Second working dir
 cd $work
 # show the log starting from tip even without checking out
@@ -302,6 +334,7 @@ zinc track -s test_scope subdir1/file11
 create_file test_scope/untracked "this files is not tracked"
 zinc status -s test_scope --full #=> test_scope/untracked is not tracked yet
 zinc track -s test_scope --mode auto #=> switch to auto mode
+zinc untrack -s test_scope subdir1/file11 || expect_error #=> untracking is not allowed in auto mode
 zinc status -s test_scope --full #=> test_scope/untracked will show up as well as other changes
 zinc track -s test_scope --mode partial #=> switch back to partial mode
 zinc commit -s test_scope -u user8 -m "partial commiting2"
@@ -322,6 +355,11 @@ cat test_scope/subdir1/file3 #=> should be "more contents"
 zinc revert -s test_scope #=> this should download the newest version of subdir1/file3
 cat test_scope/subdir1/file3 #=> should be "modify contents"
 zinc status -s test_scope
+#### wildcard test
+zinc untrack -s test_scope "subdir1/*"
+zinc status -s test_scope --full
+zinc track -s test_scope "*file*" --recursive
+zinc status -s test_scope --full
 
 
 ### Another working dir, but no caching
@@ -350,6 +388,8 @@ zinc tags -R $root_uri -s test_scope -r :tip --date '>2010-01-02'
 zinc locate -R $root_uri -s test_scope -r my-second-tag subdir1/file2
 zinc locate -R $root_uri -s test_scope file9
 zinc locate -R $root_uri -s test_scope file10
+zinc list -R $root_uri -s test_scope subdir1 --recursive
+zinc locate -R $root_uri -s test_scope subdir1 --recursive
 zinc _manifest -R $root_uri -s test_scope -r my-third-tag 
 zinc _manifest -R $root_uri -s test_scope -r mixed-compression
 zinc _manifest -R $root_uri -s test_scope

@@ -21,12 +21,22 @@ Zinc: Simple and scalable versioned data storage
 
 Requirements: Python 2.5, Boto 1.3 (or 2.0+ for large file multipart upload support), lzop (for LZO compression)
 
-Authors: Joshua Levy, Srinath Sridhar, Kazuyuki Tanimura
+Authors: Joshua Levy, Srinath Sridhar, Kazuyuki Tanimura, Nishant Deshpande
 '''
 
 #
 # Revision history:
 #
+# 0.3.29  Add zinc diff command.
+# 0.3.28  Fix: wildcard matching bug
+# 0.3.27  Zinc locate multiple files with --recursive
+# 0.3.26  Add exponential retry wait time
+# 0.3.25  Wildcard support for track and untrack commands, ignore trailing slash of scope
+# 0.3.24  Second robustness fix. Fix for bug introduced in 0.3.22 (only manifests on retry).
+# 0.3.23  Second Fix: mtime float comparison
+# 0.3.22  Be robust to IncompleteRead errors from current version of boto.
+# 0.3.21  Fix: mtime float comparison and stringify bug
+# 0.3.20  Add verbosity=0 (minimal) option and print stack trace on verbosity=1 (default)
 # 0.3.19  Retry downloading for S3 exceptions
 # 0.3.18  Add track/untrack commands, checkout --mode option, and status --full option
 # 0.3.17  Zinc log command now shows the log from the checked out revision instead of tip.
@@ -46,7 +56,7 @@ Authors: Joshua Levy, Srinath Sridhar, Kazuyuki Tanimura
 #
 
 from __future__ import with_statement
-import sys, re, os, subprocess, shutil, hashlib, binascii, random, time, logging, optparse, functools, ConfigParser, calendar, cStringIO, errno
+import sys, re, os, subprocess, shutil, hashlib, binascii, random, time, logging, optparse, functools, ConfigParser, calendar, cStringIO, errno, httplib, rfc822
 from datetime import datetime
 from contextlib import contextmanager
 
@@ -54,7 +64,7 @@ import boto
 from boto.s3.connection import S3Connection # XXX seems to be needed to initialize boto module correctly
 
 # Version of this code.
-ZINC_VERSION = "0.3.19"
+ZINC_VERSION = "0.3.29"
 # Version of this repository implementation.
 REPO_VERSION = "0.3"
 REPO_VERSIONS_SUPPORTED = ["0.2", "0.3"]
@@ -76,6 +86,7 @@ DATETIME_FORMAT = '%Y-%m-%d %H:%M:%S UTC'
 
 UNKNOWN_USER = "unknown"
 EMPTY_MESSAGE = ""
+EMPTY_FILEPATH = "/dev/null"
 
 # Used when keeping a copy of a previous file (as with revert).
 BACKUP_SUFFIX = ".orig"
@@ -106,9 +117,11 @@ SCHEME_DEFAULT = "lzo"
 # Compression level for LZO.
 LZO_LEVEL = 7
 
+# Diff command
+DIFF_COMMAND='diff -u --label %(from_label)s %(from_path)s --label %(to_label)s %(to_path)s'
 
 def log_setup(verbosity=1):
-  '''Logging verbosity: 1 = normal, 2 = verbose, 3 = debug.'''
+  '''Logging verbosity: 0 = minimal, 1 = normal, 2 = verbose, 3 = debug.'''
   global log
   log = logging.Logger("logger")
 
@@ -124,6 +137,9 @@ def log_setup(verbosity=1):
   elif verbosity == 2:
     log_handler.setFormatter(logging.Formatter('%(message)s', DATETIME_FORMAT))
     log.setLevel(logging.DEBUG)
+  elif verbosity == 0:
+    log_handler.setFormatter(logging.Formatter('%(message)s', DATETIME_FORMAT))
+    log.setLevel(logging.WARN)
   else:
     log_handler.setFormatter(logging.Formatter('%(message)s', DATETIME_FORMAT))
     log.setLevel(logging.INFO)
@@ -226,7 +242,7 @@ def fail(message=None, prefix="error", exc_info=None, status=1, suppress=False):
   else:
     if message:
       log.error("%s: %s", prefix, message)
-    if exc_info and log.verbosity > 1: # Make number 0 to always print stack traces
+    if exc_info and log.verbosity >= 1:
       log.info("", exc_info=exc_info)
     sys.exit(status)
 
@@ -410,6 +426,7 @@ def temp_output_file(prefix=None, based_on=None, with_nonce=True):
   except OSError, e:
     pass
 
+@log_calls
 def copyfile_atomic(source_path, dest_path, make_parents=False, backup_suffix=None):
   '''Copy file on local filesystem in an atomic way, so partial copies never exist. Preserves timestamps.'''
   with atomic_output_file(dest_path, make_parents=make_parents, backup_suffix=backup_suffix) as tmp_path:
@@ -508,18 +525,74 @@ def temp_output_dir(output_dir, temp_dir=None, backup_suffix=None):
     except Exception, e:
       log.warn("error cleaning up temporary directory: %s: %s", temp_dir, e)
 
-def shell_command(command):
+def shell_command(command, wait=True):
   '''
   Call a shell command, translating common exceptions. Command is a list of
   items to pass to the shell, e.g. ['ls', '-l'].
   '''
   try:
     log.debug("shell command: %s", " ".join(command))
-    subprocess.check_call(command, stderr=subprocess.STDOUT, shell=False)
+    p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=False)
+    if wait:
+      p.wait()
+    else:
+      return p
   except subprocess.CalledProcessError, e:
     raise ShellError("shell command '%s' returned status %s" % (" ".join(command), e.returncode))
   except OSError, e:
     raise ShellError("shell command '%s' failed: %s" % (" ".join(command), e))
+
+def expand_wildcards(wildcards, candidates, recursive=False):
+  '''
+  wildcards is a list of paths that includes wildcards, and candidates are paths that the wildcards match.
+  Return a list of non-wildcard paths
+  '''
+  out = []
+  match_char = '.' if recursive else '[^/]'
+  for wildcard in wildcards:
+    if '*' in wildcard or '?' in wildcard:
+      pattern = r'^' + re.escape(wildcard).replace('\\*', match_char + '*').replace('\\?', match_char) + r'$'
+      out.extend([candidate for candidate in candidates if re.search(pattern, candidate) is not None])
+    else:
+      out.append(wildcard)
+  return out
+
+# Color texts to display in Terminal
+def color_text(text, color):
+  colors = {
+    'clear': '\033[0m',
+    'black': '\033[30m',
+    'red': '\033[31m',
+    'green': '\033[32m',
+    'yellow': '\033[33m',
+    'blue': '\033[34m',
+    'purple': '\033[35m',
+    'cyan': '\033[36m',
+    'under': '\033[4m',
+  }
+  return "".join([colors[color], text, colors['clear']])
+
+# Show diff in Terminal
+def print_diff(from_path, to_path, from_label=None, to_label=None):
+  if not from_label:
+    from_label = from_path
+  if not to_label:
+    to_label = to_path
+  command = [piece % {"from_label": from_label, "from_path": from_path, "to_label": to_label, "to_path": to_path} for piece in DIFF_COMMAND.split()]
+  p = shell_command(command, wait=False)
+
+  # color the result only when the stdout is terminal
+  use_colors = sys.stdout.isatty()
+  for line in p.stdout:
+    if use_colors:
+      if line.startswith('+'):
+        line = color_text(line, 'green')
+      elif line.startswith('-'):
+        line = color_text(line, 'red')
+      elif line.startswith('@@'):
+        line = color_text(line, 'cyan')
+    sys.stdout.write(line)
+  sys.stdout.write("\n")
 
 
 ##
@@ -669,7 +742,8 @@ def shortvals_to_str(shortvals):
   for (k, v) in shortvals:
     if ";" in str(k) or "=" in str(k) or (v is not None and (";" in str(v) or "=" in str(v))):
       raise InvalidArgument("invalid shortval string: '%s'" % shortvals)
-  return ";".join(["%s=%s" % (str(k), str(v)) for (k,v) in shortvals if v is not None])
+  # XXX we cannot use str(float) since it truncates lower digits, especially on linux
+  return ";".join(["%s=%s" % (str(k), "%f" % v if isinstance(v, float) else str(v)) for (k,v) in shortvals if v is not None])
 
 def shortvals_from_str(shortvals_str):
   '''
@@ -861,6 +935,13 @@ class Config(object):
       log.info("could not read S3 keys from $HOME/.s3cfg file; skipping (%s)", e)
       return None
 
+  @staticmethod
+  def s3store_copyfile_retries():
+    '''Retrieve the number of retries for S3Store.s3_copyfile_atomic from
+    environment variable. If not present, return default.
+    '''
+    return int(os.getenv('BR_ZINC_S3STORE_COPYFILE_RETRIES', 3))
+
 
 # Checkout mode for scopes.
 # ToBeTracked is a state that a file locally exists and is tracked but not registered in manifest yet
@@ -880,6 +961,8 @@ class Fingerprint(object):
   DIFFER = "differ"
   SAME = "match"
   UNCERTAIN = "uncertain"
+
+  EPS = 0.00001
 
   def __init__(self, type=ItemType.FILE, mtime=None, size=None, md5=None, state=FileState.Tracked, **others):
     self.type = type
@@ -925,7 +1008,7 @@ class Fingerprint(object):
         else:
           return Fingerprint.DIFFER
       elif self.mtime and fp.mtime and (self.size is not None) and (fp.size is not None):
-        if self.mtime == fp.mtime and self.size == fp.size:
+        if abs(self.mtime - fp.mtime) <= Fingerprint.EPS and self.size == fp.size:
           return Fingerprint.SAME
         elif self.size != fp.size:
           return Fingerprint.DIFFER
@@ -1054,9 +1137,11 @@ class Store(object):
   def __repr__(self):
     return "Store@%s" % self.root_uri
 
+  @log_calls
   def read_string(self, store_path):
     temp_filename = new_temp_filename("read_string")
     self.download(store_path, temp_filename)
+    log.debug("downloaded %s into %s", temp_filename, store_path)
     with open(temp_filename, "rb") as fp:
       value = fp.read()
     os.remove(temp_filename)
@@ -1213,7 +1298,7 @@ class S3Store(Store):
   S3-based store.
   '''
   prefix = "s3"
-
+  retries = Config.s3store_copyfile_retries()
   def __init__(self, root_uri, config, file_cache=None):
     if not config.s3_access_key or not config.s3_secret_key:
       raise Failure("missing S3 access keys: set %s/%s environment variables or add s3_access_key/s3_secret_key to your config" %
@@ -1226,25 +1311,71 @@ class S3Store(Store):
     self.root_bucket = self.connection.get_bucket(elements[0])
     self.root_dir = '/'.join(elements[1:])
 
+  @log_calls
   def s3_copyfile_atomic(self, source_path, dest_path, make_parents=True, backup_suffix=None):
     '''Copy file on local filesystem in an atomic way, so partial copies aren't possible. Return file's MD5.'''
     # TODO catch S3ResponseError and re-raise as MissingFile
     with atomic_output_file(dest_path, make_parents=make_parents, backup_suffix=backup_suffix) as tmp_path:
       k = boto.s3.key.Key(self.root_bucket)
-      k.key = join_path(self.root_dir, source_path)
+      key_path = join_path(self.root_dir, source_path)
+      k.key = key_path
       # TODO We should also validate the MD5 of the local path against what S3
       # lists, ideally computing the MD5 during the download.
       # Boto sets modification time on file.
-      try:
-        # boto does not retry for 404 exceptions; however, Zinc sometimes encounters it due to the S3 eventual consistency
-        k.get_contents_to_filename(tmp_path)
-      except Exception, e:
-        # retry one more time
-        log.warn("S3 failed downloading '%s', reason: '%s'", source_path, e)
+      num_attempts = 0
+      md5 = None
+      # boto does not retry for 404 and IncompleteRead exceptions.
+      # Zinc sometimes encounters these (some to the S3 eventual consistency), so add
+      # some retry above boto.
+      while True:
+        try:
+          # Use get_contents_to_file so we can catch IncompleteRead and check the file.
+          # If we use get_contents_to_filename, boto may not flush the data from s3 into
+          # the file and so there is no good way of recovering from this error.
+          # Retry alone seems not to fix the problem.
+          with open(tmp_path, 'wb') as tmp_f:
+            k.get_contents_to_file(tmp_f)
+          log.debug("got contents of %s to %s", key_path, tmp_f)
+          break
+        except httplib.IncompleteRead, e:
+          log.warn("[attempt %s] %s. Going to test if file is complete.", num_attempts, e)
+          tmp_k = self.root_bucket.get_key(key_path)
+          log.info("IncompleteRead exception handler: tmp_k = %s", tmp_k)
+          # Get the metadata md5 so correctness is preserved for >5GB files.
+          repo_md5 = tmp_k.get_metadata(ZINC_S3_MD5_NAME)
+          log.info("IncompleteRead exception handler: repo_md5 = %s", repo_md5)
+          if repo_md5:
+            md5 = file_md5(tmp_path)
+            log.info("IncompleteRead exception handler: md5 = %s", md5)
+            if repo_md5 == md5:
+              log.info("IncompleteRead exception handler: recovered from IncompleteRead - file is complete - carrying on.")
+              break
+        except Exception, e:
+          log.warn("S3 failed downloading '%s', reason: '%s', attempt number %s", source_path, e, num_attempts)
+        num_attempts += 1
+        if num_attempts > self.retries:
+          raise e
+        # If retrying, remove any existing tmp file.
         if os.path.exists(tmp_path):
           os.remove(tmp_path)
-        k.get_contents_to_filename(tmp_path) # TODO retry multiple times
-        log.warn("retrying %s succeeded", source_path)
+        sleep_time_secs = 4 ** num_attempts
+        log.warn("Sleeping %d sec before retrying", sleep_time_secs)
+        time.sleep(sleep_time_secs)
+
+      # Replicate some boto functionality from get_contents_to_filename to set
+      # timestamps on the file.
+      log.debug("adding timestamp to file")
+      if k.last_modified != None:
+        try:
+          modified_tuple = rfc822.parsedate_tz(k.last_modified)
+          modified_stamp = int(rfc822.mktime_tz(modified_tuple))
+          os.utime(tmp_path, (modified_stamp, modified_stamp))
+        except Exception, e:
+          log.warn("Could not set file timestamp. Ignoring. (%s)", e)
+
+      # If md5 has already been calculated, no need to do it again. Just return it.
+      if md5:
+        return md5
 
       # Unfortunately, the logic to get the MD5 from S3 is a bit convoluted. First look for our own header.
       md5 = k.get_metadata(ZINC_S3_MD5_NAME)
@@ -1495,6 +1626,33 @@ class Changelist(object):
     self.add_paths.discard(path)
     self.rm_paths.discard(path)
     self.mod_paths.discard(path)
+
+  def union(self, other_changelist):
+    '''Return a changeset that is updated by other_changelist.'''
+    # case  1:  add  x add  = unreachable
+    # case  2:  add  x rm   = none
+    # case  3:  add  x mod  = mod
+    # case  4:  add  x none = add
+    # case  5:  rm   x add  = mod
+    # case  6:  rm   x rm   = unreachable
+    # case  7:  rm   x mod  = unreachable
+    # case  8:  rm   x none = rm
+    # case  9:  mod  x add  = unreachable
+    # case 10:  mod  x rm   = rm
+    # case 11:  mod  x mod  = mod
+    # case 12:  mod  x none = mod
+    # case 13:  none x add  = add
+    # case 14:  none x rm   = rm
+    # case 15:  none x mod  = mod
+    # case 16:  none x none = none
+    uni_changeset = Changelist()
+    uni_changeset.add_paths |= self.add_paths ^ other_changelist.add_paths # case 4, 13
+    uni_changeset.rm_paths  |= self.rm_paths  ^ other_changelist.rm_paths  # case 8, 14
+    uni_changeset.rm_paths  |= self.mod_paths & other_changelist.rm_paths  # case 10
+    uni_changeset.mod_paths |= self.add_paths & other_changelist.mod_paths # case 3
+    uni_changeset.mod_paths |= self.rm_paths  & other_changelist.add_paths # case 5
+    uni_changeset.mod_paths |= self.mod_paths | other_changelist.mod_paths # case 11, 12, 15
+    return uni_changeset
     
   def is_empty(self):
     return len(self.add_paths) == 0 and len(self.rm_paths) == 0 and len(self.mod_paths) == 0
@@ -1578,6 +1736,18 @@ def compressed_local_file(local_path, scheme):
     yield compressed_path
     # TODO For better performance, optionally accept a FileCache and move the compressed file to the cache.
     os.remove(compressed_path)   
+
+@contextmanager
+def decompressed_local_file(local_path, scheme):
+  '''Return a decompressed version of the given file according to scheme, available within a context.'''
+  if scheme == Scheme.RAW:
+    # Don't bother copying file.
+    yield local_path
+  else:
+    decompressed_path = new_temp_filename(prefix=".tmp.decompressed", based_on=local_path)
+    decompress_file(local_path, decompressed_path, scheme)
+    yield decompressed_path
+    os.remove(decompressed_path)
 
 class Fetcher(object):
   '''
@@ -1889,13 +2059,13 @@ class Repo(object):
     return items
 
   @log_calls
-  def locate(self, scope, path, srev):
+  def locate(self, scope, path, srev, recursive=False):
     '''
     Locate the store path of a single file in the repository. Returns (scheme, store_uri).
     '''
-    items = self.list(scope, path, srev, recursive=False)
-    assert len(items) == 1
-    return (items[0].scheme, items[0].full_store_path(self, scope))
+    items = self.list(scope, path, srev, recursive=recursive)
+    assert len(items) >= 1
+    return [(item.scheme, item.full_store_path(self, scope)) for item in items]
 
   @log_calls
   def commit(self, scope, local_dir, prev_rev, changelist, user=UNKNOWN_USER, message=EMPTY_MESSAGE, time=None):
@@ -2786,7 +2956,7 @@ class WorkingDir(object):
     return new_mf
 
   @log_calls
-  def track(self, scope, track_path_list=[], mode=None, no_download=False):
+  def track(self, scope, track_path_list=[], mode=None, no_download=False, recursive=False):
     '''Update working directory. track_path_list is a list of filenames to track.'''
     # If mode is unspecified, use the mode that the given scope currently in
     if mode is None:
@@ -2803,6 +2973,10 @@ class WorkingDir(object):
     cur_rev = self.get_checkout_rev(scope)
     mf = self.repo.get_manifest(scope, cur_rev)
 
+    # We need any local file changes even we are not tracking them in order to avoid overwriting
+    # the files that have the same name in the scope; I.e., use mode=Mode.AUTO when in partial_mode
+    status_changelist = self.status(scope, force_mode=Mode.AUTO)
+
     # Find out what files we need to update.
     changelist = changelist_for_items([], mf.items)
     log.debug("update from %s, changing %s", mf, changelist)
@@ -2811,11 +2985,14 @@ class WorkingDir(object):
     if partial_mode:
       self.update_scope_mode(scope, Mode.PARTIAL)
       log.info("%s: scope '%s' at revision %s in tracking mode '%s'", "track", scope, mf.rev, Mode.PARTIAL)
-      for path in track_path_list:
+      path_candidates = [item.path for item in mf.items] + list(status_changelist.add_paths)
+      for path in expand_wildcards(track_path_list, path_candidates, recursive=recursive):
         with self._yield_fingerprint(scope, path) as (fp, local_path):
           if fp is not None and fp.state in FileStateTrackedList:
-            raise InvalidOperation("scope %s path %s is already %s" % (scope, path, fp.state))
-        track_changelist.update(path, Changelist.Status.ADDED)
+            log.warn("Warning: scope %s path %s is already %s", scope, path, fp.state)
+            changelist.discard(path)
+          else:
+            track_changelist.update(path, Changelist.Status.ADDED)
       changelist = changelist.intersect(track_changelist)
 
     # if changing mode from auto to partial, register it
@@ -2823,9 +3000,6 @@ class WorkingDir(object):
       self.update_scope_mode(scope, Mode.AUTO)
       log.info("%s: scope '%s' at revision %s in tracking mode '%s'", "track", scope, mf.rev, Mode.AUTO)
 
-    # We need any local file changes even we are not tracking them in order to avoid overwriting
-    # the files that have the same name in the scope; I.e., use mode=Mode.AUTO when in partial_mode
-    status_changelist = self.status(scope, force_mode=Mode.AUTO)
     # mod_changelist is for files that manifest has but locally modified or deleted
     mod_changelist = status_changelist.intersect(changelist)
     # add_changelist is for files that manifest does no have but locally newlly added
@@ -2889,18 +3063,132 @@ class WorkingDir(object):
     return mf
 
   @log_calls
-  def untrack(self, scope, untrack_path_list, mode):
+  def untrack(self, scope, untrack_path_list, mode, recursive=False):
     if Mode.PARTIAL not in [self.get_scope_mode(scope), mode]:
       raise InvalidOperation("scope %s is not in %s tracking mode; cannot untrack files" % (scope, Mode.PARTIAL))
     # make sure this scope is in partial tracking mode first
     self.update_scope_mode(scope, Mode.PARTIAL)
-    for path in untrack_path_list:
+    path_candidates = []
+    for local_path in self.checkout_state.fingerprints.fingerprints.iterkeys():
+      path = strip_prefix(scope + '/', local_path)
+      if path is not None:
+        path_candidates.append(path)
+    for path in expand_wildcards(untrack_path_list, path_candidates, recursive=recursive):
       with self._yield_fingerprint(scope, path) as (fp, local_path):
         if fp is None or fp.state == FileState.Untracked:
-          raise InvalidOperation("scope %s path %s is already %s" % (scope, path, FileState.Untracked))
-        fp.state = FileState.Untracked
+          log.warn("Warning: scope %s path %s is already %s", scope, path, FileState.Untracked)
+        else:
+          fp.state = FileState.Untracked
     # write back trackinglist status
     self._write_checkout_state()
+
+  @log_calls
+  def diff(self, scope, opt_rev=None, path_list=None):
+    '''
+    Diff operation.
+
+    Possible scenarios:
+      opt_rev not provided, and there are no uncommitted change
+        - do nothing
+      opt_rev not provided, and there are uncommitted changes
+        - show the uncommitted changes
+      opt_rev provided, and there are no uncommitted changes
+        - show the changes between the rev and current checked out rev
+      opt_rev provided, and there are uncommitted changes
+        - show the changes between the rev and uncommitted changes
+      opt_rev is a range
+        - show the changes between the revs (regardless the uncommitted changes)
+    '''
+
+    changelist = self.status(scope)
+    cur_rev = self.get_checkout_rev(scope)
+    base_rev = None
+    trgt_rev = None # trgt_rev = None means uncommitted local changes
+    base_msg = ""
+    trgt_msg = ""
+
+    if opt_rev:
+      (base_rev, trgt_rev) = parse_rev_range(opt_rev)
+      # check if starting rev is correct
+      if not base_rev:
+        raise InvalidArgument("invalid revision range: '%s', the starting revision is mandatory for zinc diff\n" % opt_rev)
+
+      base_msg = "--rev '%s'" % base_rev
+      if trgt_rev:
+        trgt_msg = "--rev '%s'" % trgt_rev
+      else:
+        # choose checkedout rev unless there are uncommitted local changes
+        if changelist.is_empty():
+          trgt_msg = "checkedout revision"
+          trgt_rev = cur_rev
+        else:
+          trgt_msg = "uncommitted local changes"
+
+      # Get base manifest
+      base_mf = self.repo.get_manifest(scope, base_rev)
+
+      # Get target manifest
+      trgt_mf = self.repo.get_manifest(scope, (trgt_rev if trgt_rev else cur_rev))
+
+      # Find out what files we need to update.
+      if trgt_rev:
+        changelist = changelist_for_items(base_mf.items, trgt_mf.items)
+      else:
+        changelist = changelist_for_items(base_mf.items, trgt_mf.items).union(changelist)
+
+    elif not changelist.is_empty():
+      base_msg = "checkedout revision"
+      trgt_msg = "uncommited local changes"
+      base_rev = cur_rev
+
+    if base_rev:
+      #extract only changes in path_list
+      if path_list:
+        tmp_changelist = Changelist()
+        for path in path_list:
+          tmp_changelist.update(path, Changelist.Status.MODIFIED)
+        changelist = changelist.intersect(tmp_changelist)
+
+    if not changelist.is_empty():
+      sys.stdout.write("diff --zinc between %s and %s\n" % (base_msg, trgt_msg))
+      assert scope
+      sys.stdout.write("scope: %s\n" % scope)
+      if path_list:
+        sys.stdout.write("paths: %s\n" % path_list)
+
+    def _do_print_diff(path_a, path_b):
+      @contextmanager
+      def _get_real_path_and_label(path, rev=None):
+        if not path:
+          yield (EMPTY_FILEPATH, EMPTY_FILEPATH)
+        else:
+          label = join_path(scope, path)
+          if rev:
+            items = self.repo.list(scope, path, rev, recursive=False)
+            assert len(items) == 1
+            store_path = join_path(self.repo.store_path_dir(scope), items[0].store_path)
+            (cache_path, fp) = self.repo.store.cache(store_path)
+            if not cache_path:
+              raise InvalidOperation("Cannot find chached file for '%s'" % store_path)
+            with decompressed_local_file(cache_path, items[0].scheme) as decompressed_path:
+              yield (decompressed_path, label)
+          else:
+            full_path = join_path(self.work_dir, scope, path)
+            yield (full_path, label)
+
+      # TODO from python 2.7 multiple context expresssions are supported so we do not have to nest like this
+      with _get_real_path_and_label(path_a, base_rev) as (base_path, base_label):
+        with _get_real_path_and_label(path_b, trgt_rev) as (trgt_path, trgt_label):
+          print_diff(base_path, trgt_path, base_label, trgt_label)
+
+    for path in changelist.add_paths:
+      _do_print_diff(None, path)
+
+    for path in changelist.rm_paths:
+      _do_print_diff(path, None)
+
+    for path in changelist.mod_paths:
+      _do_print_diff(path, path)
 
   @log_calls
   def revert(self, scope, path_list=None, backup_suffix=BACKUP_SUFFIX):
@@ -3119,7 +3407,7 @@ class WorkingDir(object):
 # Commands that work directly on the repository 
 _COMMAND_LIST_REPO = ["init", "newscope", "scopes", "log", "tags", "tag", "list", "copy", "locate", "_manifest"]
 # Commands that require a working directory
-_COMMAND_LIST_WORK = ["checkout", "update", "revert", "id", "ids", "status", "commit", "track", "untrack"]
+_COMMAND_LIST_WORK = ["checkout", "update", "revert", "id", "ids", "status", "commit", "track", "untrack", "diff"]
 
 # Allowed command abbreviations
 _COMMAND_ABBREVS = { "cp": "copy", "ls": "list" }
@@ -3150,6 +3438,9 @@ def run_command(command, command_args, options):
 
   config = Config(options=options)
 
+  if options.scope:
+    options.scope = options.scope.rstrip('/')
+
   def populate_options_from_cwd(cwd, options):
     # Get fallback values for root_uri and scope settings from cwd, but only
     # use them if we don't have them already provided.
@@ -3175,7 +3466,7 @@ def run_command(command, command_args, options):
       require_opt(command, "root_uri", options)
       repo = Repo(options.root_uri, config, check_valid=True)
       if command == "newscope":
-        scope = require_arg(command, 1, "scope", command_args)
+        scope = require_arg(command, 1, "scope", command_args).rstrip('/')
         require_opt(command, "user", options)
         commit_time = parse_datetime(options.date) if options.date else None
         repo.create_scope(scope, user=options.user, message=options.message, time=commit_time)
@@ -3241,7 +3532,9 @@ def run_command(command, command_args, options):
         require_opt(command, "scope", options)
         rev = options.rev if options.rev else "tip"
         path = command_args[0] if len(command_args) > 0 else ""
-        print "%s\t%s" % repo.locate(options.scope, path, rev)
+        items = repo.locate(options.scope, path, rev, recursive=options.recursive)
+        for item in items:
+          print "%s\t%s" % (item[0], item[1])
       elif command == "copy":
         require_opt(command, "scope", options)
         rev = options.rev if options.rev else "tip"
@@ -3389,17 +3682,25 @@ def run_command(command, command_args, options):
           if len(command_args) > 0:
             # track some files
             for checkout in checkouts:
-              work.track(checkout.scope, track_path_list=command_args, mode=options.mode, no_download=options.no_download)
+              work.track(checkout.scope, track_path_list=command_args, mode=options.mode, no_download=options.no_download, recursive=options.recursive)
           else:
             # Change mode
             for checkout in checkouts:
-              work.track(checkout.scope, mode=options.mode, no_download=options.no_download)
+              work.track(checkout.scope, mode=options.mode, no_download=options.no_download, recursive=options.recursive)
         elif command == "untrack":
           # untrack some files
           for checkout in checkouts:
-            work.untrack(checkout.scope, command_args, options.mode)
+            work.untrack(checkout.scope, command_args, options.mode, recursive=options.recursive)
         else:
           assert False
+      elif command == "diff":
+        if options.all or options.date or options.mod_all or options.no_cache or options.work:
+          raise InvalidOperation("diff --all --date --mod-all --no-cache --work are not supported")
+        elif options.short_paths:
+          raise NotImplementedError("sorry, diff --short-paths not yet implemented")
+        else:
+          require_opt(command, "scope", options)
+          work.diff(options.scope, options.rev, path_list=command_args)
   else:
     assert False
 
@@ -3440,6 +3741,8 @@ def main():
   parser.add_option('--mode', help='specify tracking mode: %s (for checkout, track, untrack)' % Mode.values(), dest='mode', action='store', type='string', default=None)
   parser.add_option('--no-download', help='track files without copying them to working directory (for track)', dest='no_download', action='store_true')
   parser.add_option('--full', help='show full status when in "%s" tracking mode (for status)' % Mode.PARTIAL, dest='full', action='store_true')
+  parser.add_option('--minimal', help='minimal log output', dest='minimal', action='store_true')
+  parser.add_option('--verbosity', help='Logging verbosity: 0 = minimal, 1 = normal, 2 = verbose, 3 = debug.', dest='verbosity', action='store', type='int', default=1)
 
   (options, args) = parser.parse_args()
 
@@ -3452,6 +3755,10 @@ def main():
     log.debug("this is %s", version_str)
   elif options.verbose:
     log_setup(verbosity=2)
+  elif options.minimal:
+    log_setup(verbosity=0)
+  else:
+    log_setup(verbosity=options.verbosity)
 
   if len(args) < 1:
     fail("specify a command, or run with -h for help")
@@ -3501,7 +3808,7 @@ if __name__ == '__main__':
 #   support nested scopes: manage creation, regenerations of manifests, etc.; also automatic recursive scope updates/commits
 #   locking during commit and tag operations (NoLockingService is used by default, need to acquire locks for whole operation).
 #   use sqlight3 instead of writing checkout-state in order to make zinc multi-process safe
-#   support wildcards *
+#   support wildcards * besides track and untrack
 # other important features:
 #   annotations (like tags, but key-value pairs; for example "deploy_date=20120801")
 #   extend the Changelist class to include Unmodified and Invalid states so that we can show a list of tracked files for example.
@@ -3522,7 +3829,6 @@ if __name__ == '__main__':
 # accept file arguments to commit and perhaps other commands
 # fix copy command to take multiple args, use only last for target
 # handle argument path names that are relative to cwd
-# zinc diff command
 # file cache: add to cache on upload as well as download
 # don't error with "checkout -s scope" followed by "checkout --all"
 # support deleting tags; catch invalid or duplicate tags to tags command
