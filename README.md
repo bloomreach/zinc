@@ -230,12 +230,13 @@ is good for scripts or situations where you only want to examine a few files.
     zinc locate -a -R s3://my-bucket/zinc/my-repo -s customer/acme subdir1
 
 ## Partial Checkout (New in version 0.3.18)
-###Objectives:
+
+### Objectives:
 Checking out an entire scope sometimes requires GB order of file transfer in total. The new version of zinc allows partial checkouts
 
 Here, we will have an idea of partial tracking mode v.s. auto tracking mode (i.e. current behavior, all local changes will be picked up). In partial tracking mode, only tracked files will show up in status or be allowed to be committed. Zinc checkout command with "--mode partial" option puts the checked-out scope in partial tracking mode. The default is "--mode auto" We can also switch between these two modes using track/untrack commands. Moreover, we can track/untrack only specific files as well.
 
-###Example Usage:
+### Example Usage:
     # checkout in tracking-mode
     zinc checkout -s <scope> s3://my-bucket/zinc/my-repo --mode partial # => nothing will be downloaded
 
@@ -279,7 +280,7 @@ Here, we will have an idea of partial tracking mode v.s. auto tracking mode (i.e
     zinc untrack -s test_scope "subdir1/*"
     zinc track -a -s test_scope "*file*"
 
-###What is the catch??
+### What is the catch??
 * After updating Zinc, Zinc migrates its internal logging file "checkout-state" to a new format. After this migration, older version of Zinc cannot pick up the checked out states/files. Mixed usage of old version and new version of Zinc is prohibited!!
 * If there is a local file with the same name as the file you are trying to track, Zinc assumes that the local copy in working directory is the newest. It does not do automatic rebase. The author is responsible to make sure that the change is on top of the current data.
 * "Create a new file => track it => remove it" puts the file in an invalid state. Currently we can catch it only when we commit it (zinc status gives you a warning). The remote repo is safe and we leave this behavior for now.
